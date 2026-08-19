@@ -9,10 +9,12 @@
 ## Build Commands
 
 ```powershell
-sbt clean compile
+sbt "clean; compile"
 sbt test
-sbt scalafmtSbtCheck scalafmtCheckAll
+sbt "scalafmtSbtCheck; scalafmtCheckAll"
 sbt "scalafixAll --check"
+sbt verifyArchitecture
+sbt integrationTests/Test/compile
 ```
 
 ## IntelliJ / BSP
@@ -32,21 +34,32 @@ directory is local-only and intentionally ignored by Git.
 
 ## Cassandra
 
-Create local `.env` if you need environment overrides.
+## Environment Variables
+
+The JVM does not read `.env` automatically. Typesafe Config only sees real process
+environment variables through `${?PAYMENT_*}` substitutions.
+
+`.env.example` is a committed reference template. The wrapper scripts create `.env`
+from `.env.example` when missing, load it for the child command, and do not modify the
+parent shell environment.
 
 Windows:
 
 ```powershell
-.\scripts\windows\init-env.ps1
+.\scripts\windows\run-with-env.ps1 -- sbt "bootstrap/Test/runMain com.paymentprocessing.bootstrap.config.AppConfigEnvironmentProbe"
 ```
 
 macOS/Linux:
 
 ```sh
-sh scripts/unix/init-env.sh
+sh scripts/unix/run-with-env.sh -- sbt "bootstrap/Test/runMain com.paymentprocessing.bootstrap.config.AppConfigEnvironmentProbe"
 ```
 
-Both scripts copy `.env.example` to `.env` only when `.env` does not already exist.
+Alternatively, export `PAYMENT_ENVIRONMENT=local` and the other `PAYMENT_*` values in
+your shell before launching sbt/application code.
+
+Docker Compose does not consume the `PAYMENT_*` variables in `.env`; Cassandra local
+settings are declared directly in `compose.yaml`.
 
 Start local Cassandra:
 

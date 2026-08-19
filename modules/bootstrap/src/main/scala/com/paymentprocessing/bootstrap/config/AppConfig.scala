@@ -23,10 +23,13 @@ final case class SecurityConfig(tokenIssuer: String)
 
 final case class ObservabilityConfig(structuredLogging: Boolean)
 
-final case class ProviderConfig(mode: String)
+final case class ProviderConfig(mode: ProviderMode)
 
 enum RuntimeEnvironment:
   case Local, Test, Production
+
+enum ProviderMode:
+  case Mock
 
 object AppConfig:
   def load(): Either[ConfigError, AppConfig] =
@@ -57,7 +60,7 @@ object AppConfig:
           structuredLogging = resolved.getBoolean("payment.observability.structured-logging")
         ),
         provider = ProviderConfig(
-          mode = requiredNonBlank(resolved, "payment.provider.mode")
+          mode = parseProviderMode(requiredNonBlank(resolved, "payment.provider.mode"))
         )
       )
       validate(parsed)
@@ -70,10 +73,10 @@ object AppConfig:
   private def validate(config: AppConfig): Unit =
     if config.application.environment == RuntimeEnvironment.Production then
       rejectProductionPlaceholder("payment.security.token-issuer", config.security.tokenIssuer)
-      if config.provider.mode == "mock" then
-        throw ConfigError("payment.provider.mode cannot be mock in production")
+      throw ConfigError("Production runtime is not supported in the current implementation phase")
 
   private def requiredNonBlank(config: Config, path: String): String =
+    if !config.hasPath(path) then throw ConfigError(s"$path must be defined")
     val value = config.getString(path).trim
     if value.isEmpty then throw ConfigError(s"$path must be non-blank")
     value
@@ -84,11 +87,16 @@ object AppConfig:
     value
 
   private def parseEnvironment(value: String): RuntimeEnvironment =
-    value.toLowerCase match
+    value.trim.toLowerCase match
       case "local" => RuntimeEnvironment.Local
       case "test" => RuntimeEnvironment.Test
       case "production" => RuntimeEnvironment.Production
       case other => throw ConfigError(s"Unsupported payment.application.environment: $other")
+
+  private def parseProviderMode(value: String): ProviderMode =
+    value.trim.toLowerCase match
+      case "mock" => ProviderMode.Mock
+      case other => throw ConfigError(s"Unsupported payment.provider.mode: $other")
 
   private def rejectProductionPlaceholder(path: String, value: String): Unit =
     val normalized = value.toLowerCase
@@ -96,4 +104,4 @@ object AppConfig:
     if unsafeValues.contains(normalized) then
       throw ConfigError(s"$path uses an unsafe production placeholder")
 
-final case class ConfigError(message: String) extends RuntimeException(message)
+final case class ConfigError(message: String) extends Exception(message)
