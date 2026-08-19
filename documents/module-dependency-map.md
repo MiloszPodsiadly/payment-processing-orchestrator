@@ -32,8 +32,10 @@ domain
 
 - sbt project dependencies point inward only.
 - `verifyArchitecture` fails if expected module directories are missing.
-- `verifyArchitecture` checks that `domain` has no compile dependency on framework or infrastructure libraries.
-- `verifyArchitecture` checks that `application` has no compile dependency on HTTP, storage, actor runtime, provider-client, or JWT implementation libraries.
+- `verifyArchitecture` restricts `domain` production compile dependencies to an explicit approved set: `org.scala-lang:scala3-library_3` and `org.scala-lang:scala-library`.
+- `verifyArchitecture` restricts `application` production compile dependencies to the same explicit approved external set plus its approved structural project coordinate `com.paymentprocessing:payment-domain_3`.
+- Unknown external compile dependencies in `domain` or `application` fail until they receive architecture approval and the approved set is deliberately extended.
+- A small known-forbidden family check remains as defense in depth; it is not the primary guarantee.
 - `verifyArchitecture` checks the direct sbt project graph against the approved dependency direction.
 - Test-scope libraries are allowed and are not treated as compile dependency violations.
 - `bootstrap` composes modules and owns typed startup configuration loading.

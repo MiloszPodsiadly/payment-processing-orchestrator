@@ -19,7 +19,8 @@ not become an accidental dependency of the default fast test workflow.
 
 - `bootstrap` has configuration loader tests covering explicit runtime environment, typed provider mode, missing mandatory fields, invalid values, unsupported production runtime, and unsafe production placeholders.
 - `integration-tests` has source boundary checks for forbidden framework imports in `domain` and `application`, including negative fixtures for missing directories and forbidden imports.
-- `verifyArchitecture` checks expected repository directories, forbidden compile dependencies for `domain` and `application`, the direct sbt project graph, and then runs the architecture source-boundary suite.
+- `verifyArchitecture` checks expected repository directories, approved production compile dependencies for `domain` and `application`, known-forbidden dependency families as defense in depth, the direct sbt project graph, and then runs the architecture source-boundary suite.
+- The architecture gate includes a pure negative fixture proving an unapproved external compile dependency fails the approval policy.
 
 ## Deferred Test Work
 

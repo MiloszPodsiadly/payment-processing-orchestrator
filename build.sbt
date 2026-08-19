@@ -1,4 +1,5 @@
 import Dependencies.*
+import ArchitecturePolicy.*
 
 import java.nio.file.Files
 
@@ -153,6 +154,28 @@ ThisBuild / verifyArchitecture := Def.uncached {
 
   if missingDirectories.nonEmpty then
     sys.error(s"Missing required architecture directories: ${missingDirectories.mkString(", ")}")
+
+  val approvedDomainCompileDependencies =
+    infrastructureNeutralCompileDependencies
+
+  val approvedApplicationCompileDependencies =
+    infrastructureNeutralCompileDependencies +
+      DependencyCoordinate(organization.value, s"payment-domain_${scalaBinaryVersion.value}")
+
+  verifyFixtures(approvedDomainCompileDependencies)
+
+  val approvalViolations =
+    unapprovedDependencyViolations(
+      "domain",
+      compileDependencyCoordinates((domain / update).value),
+      approvedDomainCompileDependencies
+    ) ++ unapprovedDependencyViolations(
+      "application",
+      compileDependencyCoordinates((application / update).value),
+      approvedApplicationCompileDependencies
+    )
+
+  if approvalViolations.nonEmpty then sys.error(approvalViolations.mkString(System.lineSeparator()))
 
   val forbiddenCompileDependencyMarkers = Map(
     "domain" -> Seq(
