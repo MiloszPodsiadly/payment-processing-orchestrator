@@ -149,8 +149,8 @@ object PaymentDecider:
       case (PaymentState.Authorized(_, _), _: PaymentCommand.RefundPayment) =>
         Left(PaymentError.PaymentNotCaptured)
 
-      case (PaymentState.Refunded(_, _, _, _), _: PaymentCommand.RefundPayment) =>
-        Left(PaymentError.PaymentAlreadyRefunded)
+      case (state @ PaymentState.Refunded(_, _, _, _), command: PaymentCommand.RefundPayment) =>
+        completedRefundReplay(state, command, PaymentError.PaymentAlreadyRefunded)
 
       case (
             PaymentState.RefundPending(_, _, _, _, pending),
@@ -205,6 +205,15 @@ object PaymentDecider:
       case (PaymentState.Refunded(_, _, _, refunds), RefundResultInput(result)) =>
         duplicateCompletedRefundResult(refunds, result)
 
+      case (
+            PaymentState.RefundFailed(_, _, _, _, failedRefund),
+            PaymentCommand.RecordRefundFailed(operationId, _)
+          ) =>
+        noOpIfSameOperation(failedRefund.operationId, operationId)
+
+      case (PaymentState.RefundFailed(_, _, _, _, failedRefund), RefundResultInput(result)) =>
+        conflictingOrMismatch(failedRefund.operationId, result.operationId)
+
       case (PaymentState.NotCreated, _) =>
         Left(PaymentError.PaymentNotCreated)
 
@@ -241,33 +250,38 @@ object PaymentDecider:
         PaymentState.AuthorizationPending(payment, operationId)
 
       case (
-            PaymentState.AuthorizationPending(payment, _),
+            PaymentState.AuthorizationPending(payment, expected),
             PaymentEvent.PaymentAuthorized(operationId, occurredAt)
           ) =>
+        requireOperation(state, event, expected, operationId, "authorization success")
         PaymentState.Authorized(payment, AuthorizationRecord(operationId, occurredAt))
 
       case (
-            PaymentState.AuthorizationUnknown(payment, _),
+            PaymentState.AuthorizationUnknown(payment, expected),
             PaymentEvent.PaymentAuthorized(operationId, occurredAt)
           ) =>
+        requireOperation(state, event, expected, operationId, "authorization success")
         PaymentState.Authorized(payment, AuthorizationRecord(operationId, occurredAt))
 
       case (
-            PaymentState.AuthorizationPending(payment, _),
+            PaymentState.AuthorizationPending(payment, expected),
             PaymentEvent.PaymentDeclined(operationId, occurredAt)
           ) =>
+        requireOperation(state, event, expected, operationId, "authorization decline")
         PaymentState.Declined(payment, AuthorizationRecord(operationId, occurredAt))
 
       case (
-            PaymentState.AuthorizationUnknown(payment, _),
+            PaymentState.AuthorizationUnknown(payment, expected),
             PaymentEvent.PaymentDeclined(operationId, occurredAt)
           ) =>
+        requireOperation(state, event, expected, operationId, "authorization decline")
         PaymentState.Declined(payment, AuthorizationRecord(operationId, occurredAt))
 
       case (
-            PaymentState.AuthorizationPending(payment, _),
+            PaymentState.AuthorizationPending(payment, expected),
             PaymentEvent.AuthorizationOutcomeUnknown(operationId, _)
           ) =>
+        requireOperation(state, event, expected, operationId, "authorization unknown")
         PaymentState.AuthorizationUnknown(payment, operationId)
 
       case (
@@ -277,9 +291,10 @@ object PaymentDecider:
         PaymentState.CapturePending(payment, authorization, operationId)
 
       case (
-            PaymentState.CapturePending(payment, authorization, _),
+            PaymentState.CapturePending(payment, authorization, expected),
             PaymentEvent.PaymentCaptured(operationId, occurredAt)
           ) =>
+        requireOperation(state, event, expected, operationId, "capture success")
         PaymentState.Captured(
           payment,
           authorization,
@@ -288,9 +303,10 @@ object PaymentDecider:
         )
 
       case (
-            PaymentState.CaptureUnknown(payment, authorization, _),
+            PaymentState.CaptureUnknown(payment, authorization, expected),
             PaymentEvent.PaymentCaptured(operationId, occurredAt)
           ) =>
+        requireOperation(state, event, expected, operationId, "capture success")
         PaymentState.Captured(
           payment,
           authorization,
@@ -299,25 +315,29 @@ object PaymentDecider:
         )
 
       case (
-            PaymentState.CapturePending(payment, authorization, _),
+            PaymentState.CapturePending(payment, authorization, expected),
             PaymentEvent.CaptureFailed(operationId, _)
           ) =>
+        requireOperation(state, event, expected, operationId, "capture failure")
         PaymentState.CaptureFailed(payment, authorization, operationId)
 
       case (
-            PaymentState.CaptureUnknown(payment, authorization, _),
+            PaymentState.CaptureUnknown(payment, authorization, expected),
             PaymentEvent.CaptureFailed(operationId, _)
           ) =>
+        requireOperation(state, event, expected, operationId, "capture failure")
         PaymentState.CaptureFailed(payment, authorization, operationId)
 
       case (
-            PaymentState.CapturePending(payment, authorization, _),
+            PaymentState.CapturePending(payment, authorization, expected),
             PaymentEvent.CaptureOutcomeUnknown(operationId, _)
           ) =>
+        requireOperation(state, event, expected, operationId, "capture unknown")
         PaymentState.CaptureUnknown(payment, authorization, operationId)
 
       case (state: RefundableState, event: PaymentEvent.RefundRequested) =>
         val data = refundableData(state)
+        validateRefundRequestHistory(state, event, data)
         PaymentState.RefundPending(
           data.payment,
           data.authorization,
@@ -327,9 +347,10 @@ object PaymentDecider:
         )
 
       case (
-            PaymentState.RefundPending(payment, authorization, capture, completedRefunds, _),
+            PaymentState.RefundPending(payment, authorization, capture, completedRefunds, pending),
             event: PaymentEvent.PaymentPartiallyRefunded
           ) =>
+        validateRefundSuccessHistory(state, event, capture, completedRefunds, pending)
         PaymentState.PartiallyRefunded(
           payment,
           authorization,
@@ -343,9 +364,10 @@ object PaymentDecider:
         )
 
       case (
-            PaymentState.RefundUnknown(payment, authorization, capture, completedRefunds, _),
+            PaymentState.RefundUnknown(payment, authorization, capture, completedRefunds, pending),
             event: PaymentEvent.PaymentPartiallyRefunded
           ) =>
+        validateRefundSuccessHistory(state, event, capture, completedRefunds, pending)
         PaymentState.PartiallyRefunded(
           payment,
           authorization,
@@ -359,9 +381,10 @@ object PaymentDecider:
         )
 
       case (
-            PaymentState.RefundPending(payment, authorization, capture, completedRefunds, _),
+            PaymentState.RefundPending(payment, authorization, capture, completedRefunds, pending),
             event: PaymentEvent.PaymentRefunded
           ) =>
+        validateRefundSuccessHistory(state, event, capture, completedRefunds, pending)
         PaymentState.Refunded(
           payment,
           authorization,
@@ -375,9 +398,10 @@ object PaymentDecider:
         )
 
       case (
-            PaymentState.RefundUnknown(payment, authorization, capture, completedRefunds, _),
+            PaymentState.RefundUnknown(payment, authorization, capture, completedRefunds, pending),
             event: PaymentEvent.PaymentRefunded
           ) =>
+        validateRefundSuccessHistory(state, event, capture, completedRefunds, pending)
         PaymentState.Refunded(
           payment,
           authorization,
@@ -392,24 +416,27 @@ object PaymentDecider:
 
       case (
             PaymentState.RefundPending(payment, authorization, capture, completedRefunds, pending),
-            PaymentEvent.RefundFailed(_, _)
+            PaymentEvent.RefundFailed(operationId, _)
           ) =>
+        requireOperation(state, event, pending.operationId, operationId, "refund failure")
         PaymentState.RefundFailed(payment, authorization, capture, completedRefunds, pending)
 
       case (
             PaymentState.RefundUnknown(payment, authorization, capture, completedRefunds, pending),
-            PaymentEvent.RefundFailed(_, _)
+            PaymentEvent.RefundFailed(operationId, _)
           ) =>
+        requireOperation(state, event, pending.operationId, operationId, "refund failure")
         PaymentState.RefundFailed(payment, authorization, capture, completedRefunds, pending)
 
       case (
             PaymentState.RefundPending(payment, authorization, capture, completedRefunds, pending),
-            PaymentEvent.RefundOutcomeUnknown(_, _)
+            PaymentEvent.RefundOutcomeUnknown(operationId, _)
           ) =>
+        requireOperation(state, event, pending.operationId, operationId, "refund unknown")
         PaymentState.RefundUnknown(payment, authorization, capture, completedRefunds, pending)
 
       case _ =>
-        throw InvalidPaymentHistory(state, event)
+        invalidHistory(state, event, "event is not legal for current state")
 
   private def created(command: PaymentCommand.CreatePayment): PaymentEvent =
     PaymentEvent.PaymentCreated(
@@ -485,8 +512,10 @@ object PaymentDecider:
   ): Either[PaymentError, List[PaymentEvent]] =
     val data = refundableData(state)
 
-    if data.refunds.exists(_.refundId == command.refundId) then
-      Left(PaymentError.DuplicateRefundConflict(command.refundId))
+    val completedReplay = completedRefundReplay(data.refunds, command)
+    if completedReplay.isDefined then completedReplay.get
+    else if data.refunds.exists(_.operationId == command.operationId) then
+      Left(PaymentError.ProviderOperationAlreadyUsed(command.operationId))
     else if command.amount.currency != data.capture.amount.currency then
       Left(PaymentError.RefundCurrencyMismatch)
     else
@@ -505,6 +534,30 @@ object PaymentDecider:
             )
           )
         )
+
+  private def completedRefundReplay(
+      state: PaymentState,
+      command: PaymentCommand.RefundPayment,
+      fallback: PaymentError
+  ): Either[PaymentError, List[PaymentEvent]] =
+    state match
+      case PaymentState.Refunded(_, _, _, refunds) =>
+        completedRefundReplay(refunds, command).getOrElse(Left(fallback))
+      case _ => Left(fallback)
+
+  private def completedRefundReplay(
+      refunds: List[RefundRecord],
+      command: PaymentCommand.RefundPayment
+  ): Option[Either[PaymentError, List[PaymentEvent]]] =
+    refunds.find(_.refundId == command.refundId) match
+      case Some(refund)
+          if refund.operationId == command.operationId && refund.amount == command.amount =>
+        Some(Right(Nil))
+      case Some(_) =>
+        Some(Left(PaymentError.DuplicateRefundConflict(command.refundId)))
+      case None if refunds.exists(_.operationId == command.operationId) =>
+        Some(Left(PaymentError.ProviderOperationAlreadyUsed(command.operationId)))
+      case None => None
 
   private def totalRefunded(refunds: List[RefundRecord]): BigDecimal =
     refunds.map(_.amount.amount).foldLeft(BigDecimal(0))(_ + _)
@@ -691,9 +744,85 @@ object PaymentDecider:
         occurredAt
       )
 
+  private def requireOperation(
+      state: PaymentState,
+      event: PaymentEvent,
+      expected: ProviderOperationId,
+      actual: ProviderOperationId,
+      context: String
+  ): Unit =
+    if expected != actual then
+      invalidHistory(
+        state,
+        event,
+        s"$context operation mismatch: expected=${expected.value}, actual=${actual.value}"
+      )
+
+  private def validateRefundRequestHistory(
+      state: PaymentState,
+      event: PaymentEvent.RefundRequested,
+      data: RefundableData
+  ): Unit =
+    if event.amount.currency != data.capture.amount.currency then
+      invalidHistory(state, event, "refund request currency does not match capture currency")
+    if data.refunds.exists(_.refundId == event.refundId) then
+      invalidHistory(state, event, "refund request reuses completed refund ID")
+    if data.refunds.exists(_.operationId == event.operationId) then
+      invalidHistory(state, event, "refund request reuses completed provider operation ID")
+
+    val totalAfterRefund = totalRefunded(data.refunds) + event.amount.amount
+    if totalAfterRefund > data.capture.amount.amount then
+      invalidHistory(state, event, "refund request exceeds captured amount")
+
+  private def validateRefundSuccessHistory(
+      state: PaymentState,
+      event: PaymentEvent.PaymentPartiallyRefunded | PaymentEvent.PaymentRefunded,
+      capture: CaptureRecord,
+      completedRefunds: List[RefundRecord],
+      pending: PendingRefund
+  ): Unit =
+    val (refundId, operationId, amount, isFullRefundEvent) =
+      event match
+        case PaymentEvent.PaymentPartiallyRefunded(refundId, operationId, amount, _) =>
+          (refundId, operationId, amount, false)
+        case PaymentEvent.PaymentRefunded(refundId, operationId, amount, _) =>
+          (refundId, operationId, amount, true)
+
+    if refundId != pending.refundId then
+      invalidHistory(state, event, "refund success ID does not match pending refund")
+    if operationId != pending.operationId then
+      invalidHistory(state, event, "refund success operation does not match pending refund")
+    if amount != pending.amount then
+      invalidHistory(state, event, "refund success amount does not match pending refund")
+    if amount.currency != capture.amount.currency then
+      invalidHistory(state, event, "refund success currency does not match capture currency")
+
+    val totalAfterRefund = totalRefunded(completedRefunds) + amount.amount
+    if totalAfterRefund > capture.amount.amount then
+      invalidHistory(state, event, "refund success exceeds captured amount")
+
+    val shouldBeFullRefund = totalAfterRefund == capture.amount.amount
+    if shouldBeFullRefund != isFullRefundEvent then
+      invalidHistory(state, event, "refund success event kind does not match financial result")
+
+  private def invalidHistory(
+      state: PaymentState,
+      event: PaymentEvent,
+      reason: String
+  ): Nothing =
+    throw InvalidPaymentHistory(state, event, reason)
+
 final case class InvalidPaymentHistory(
     state: PaymentState,
-    event: PaymentEvent
+    event: PaymentEvent,
+    reason: String = "event is not legal for current state"
 ) extends IllegalStateException(
-      s"Invalid payment event history: cannot apply $event to $state"
+      s"Invalid payment event history: state=${InvalidPaymentHistory.stateKind(state)}, event=${InvalidPaymentHistory.eventKind(event)}, reason=$reason"
     )
+
+object InvalidPaymentHistory:
+  def stateKind(state: PaymentState): String =
+    state.productPrefix
+
+  def eventKind(event: PaymentEvent): String =
+    event.productPrefix

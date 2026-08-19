@@ -49,7 +49,8 @@ opaque type ProviderOperationId = String
 
 object ProviderOperationId:
   def from(value: String): Either[InvalidProviderOperationId, ProviderOperationId] =
-    Either.cond(value.trim.nonEmpty, value, InvalidProviderOperationId.Blank)
+    val normalized = value.trim
+    Either.cond(normalized.nonEmpty, normalized, InvalidProviderOperationId.Blank)
 
   extension (id: ProviderOperationId) def value: String = id
 
@@ -60,6 +61,7 @@ opaque type PaymentMethodToken = String
 
 object PaymentMethodToken:
   def from(value: String): Either[InvalidPaymentMethodToken, PaymentMethodToken] =
-    Either.cond(value.trim.nonEmpty, value, InvalidPaymentMethodToken.Blank)
+    val normalized = value.trim
+    Either.cond(normalized.nonEmpty, normalized, InvalidPaymentMethodToken.Blank)
 
   extension (token: PaymentMethodToken) def value: String = token

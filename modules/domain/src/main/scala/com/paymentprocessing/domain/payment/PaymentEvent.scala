@@ -33,13 +33,11 @@ enum PaymentEvent:
   case PaymentAuthorized(operationId: ProviderOperationId, occurredAt: Instant)
   case PaymentDeclined(operationId: ProviderOperationId, occurredAt: Instant)
   case AuthorizationOutcomeUnknown(operationId: ProviderOperationId, occurredAt: Instant)
-  case AuthorizationOutcomeReconciled(operationId: ProviderOperationId, occurredAt: Instant)
 
   case CaptureRequested(operationId: ProviderOperationId, occurredAt: Instant)
   case PaymentCaptured(operationId: ProviderOperationId, occurredAt: Instant)
   case CaptureFailed(operationId: ProviderOperationId, occurredAt: Instant)
   case CaptureOutcomeUnknown(operationId: ProviderOperationId, occurredAt: Instant)
-  case CaptureOutcomeReconciled(operationId: ProviderOperationId, occurredAt: Instant)
 
   case RefundRequested(
       refundId: RefundId,
@@ -61,4 +59,3 @@ enum PaymentEvent:
   )
   case RefundFailed(operationId: ProviderOperationId, occurredAt: Instant)
   case RefundOutcomeUnknown(operationId: ProviderOperationId, occurredAt: Instant)
-  case RefundOutcomeReconciled(operationId: ProviderOperationId, occurredAt: Instant)

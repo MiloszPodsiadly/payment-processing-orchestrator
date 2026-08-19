@@ -19,3 +19,4 @@ enum PaymentError:
   case RefundCurrencyMismatch
   case RefundExceedsCapturedAmount
   case DuplicateRefundConflict(refundId: RefundId)
+  case ProviderOperationAlreadyUsed(operationId: ProviderOperationId)

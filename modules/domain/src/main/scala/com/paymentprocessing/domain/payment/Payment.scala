@@ -36,7 +36,7 @@ final class Payment private (
     Seq(paymentId, tenantId, customerId, merchantId, amount, paymentMethodToken, createdAt).hashCode
 
   override def toString: String =
-    s"Payment($paymentId,$tenantId,$customerId,$merchantId,$amount,$paymentMethodToken,$createdAt)"
+    s"Payment(paymentId=$paymentId,tenantId=$tenantId,customerId=$customerId,merchantId=$merchantId,amount=$amount,paymentMethodToken=[REDACTED],createdAt=$createdAt)"
 
 object Payment:
   def apply(
@@ -50,25 +50,25 @@ object Payment:
   ): Payment =
     new Payment(paymentId, tenantId, customerId, merchantId, amount, paymentMethodToken, createdAt)
 
-final case class AuthorizationRecord(
+final case class AuthorizationRecord private[payment] (
     operationId: ProviderOperationId,
     occurredAt: Instant
 )
 
-final case class CaptureRecord(
+final case class CaptureRecord private[payment] (
     operationId: ProviderOperationId,
     amount: Money,
     occurredAt: Instant
 )
 
-final case class RefundRecord(
+final case class RefundRecord private[payment] (
     refundId: RefundId,
     operationId: ProviderOperationId,
     amount: Money,
     occurredAt: Instant
 )
 
-final case class PendingRefund(
+final case class PendingRefund private[payment] (
     refundId: RefundId,
     operationId: ProviderOperationId,
     amount: Money,
