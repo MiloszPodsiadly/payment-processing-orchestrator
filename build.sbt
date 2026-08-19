@@ -1,16 +1,25 @@
+import Dependencies.*
+
 ThisBuild / organization := "com.paymentprocessing"
 ThisBuild / version := "0.1.0-SNAPSHOT"
-ThisBuild / scalaVersion := "3.8.4"
+ThisBuild / scalaVersion := Versions.scalaVersion
+ThisBuild / semanticdbEnabled := true
 
 lazy val commonSettings = Seq(
+  javacOptions ++= Seq("--release", Versions.javaRelease.toString),
   scalacOptions ++= Seq(
+    "-release:" + Versions.javaRelease,
     "-deprecation",
     "-feature",
     "-unchecked",
     "-Wunused:all",
-    "-Wvalue-discard"
+    "-Wvalue-discard",
+    "-Wnonunit-statement"
   ),
-  Test / parallelExecution := true
+  Test / parallelExecution := true,
+  Test / fork := true,
+  testFrameworks += new TestFramework("munit.Framework"),
+  libraryDependencies ++= testDependencies
 )
 
 lazy val domain = project
@@ -28,7 +37,10 @@ lazy val runtimePekko = project
   .in(file("modules/runtime-pekko"))
   .dependsOn(application)
   .settings(commonSettings)
-  .settings(name := "payment-runtime-pekko")
+  .settings(
+    name := "payment-runtime-pekko",
+    libraryDependencies ++= pekkoRuntimeDependencies.map(_ % Test)
+  )
 
 lazy val adapterHttpTapir = project
   .in(file("modules/adapter-http-tapir"))
@@ -77,13 +89,19 @@ lazy val bootstrap = project
     observability
   )
   .settings(commonSettings)
-  .settings(name := "payment-bootstrap")
+  .settings(
+    name := "payment-bootstrap",
+    libraryDependencies += typesafeConfig
+  )
 
 lazy val integrationTests = project
   .in(file("integration-tests"))
   .dependsOn(bootstrap)
   .settings(commonSettings)
-  .settings(name := "payment-integration-tests")
+  .settings(
+    name := "payment-integration-tests",
+    libraryDependencies ++= integrationTestDependencies
+  )
 
 lazy val root = project
   .in(file("."))
@@ -104,4 +122,3 @@ lazy val root = project
     name := "payment-processing-orchestrator",
     publish / skip := true
   )
-
