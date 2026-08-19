@@ -6,7 +6,7 @@ external side effects.
 
 ## Typed Identifiers
 
-The domain uses distinct opaque identifier types:
+The domain uses distinct domain identifier types:
 
 - `PaymentId`
 - `TenantId`
@@ -17,9 +17,10 @@ The domain uses distinct opaque identifier types:
 - `PaymentMethodToken`
 
 UUID-backed identifiers are constructed from UUID values supplied by outer layers. The
-domain does not generate UUIDs. `ProviderOperationId` and `PaymentMethodToken` reject
-blank strings, canonicalize surrounding whitespace by storing the trimmed value, and do
-not model raw payment credentials.
+domain does not generate UUIDs. `ProviderOperationId` rejects blank strings and
+canonicalizes surrounding whitespace by storing the trimmed value. `PaymentMethodToken`
+is a small immutable value object with an explicit raw `value` accessor for future
+adapters and a redacted textual representation for diagnostics.
 
 ## Money And Currency
 
@@ -61,8 +62,9 @@ There is no string status field.
 history, and capture amount so refund bounds can be enforced.
 
 `PaymentCommand` represents intent or externally supplied results. Commands that refer to
-provider mutations carry a supplied `ProviderOperationId`. Refund commands also carry a
-supplied `RefundId`.
+provider mutations carry a supplied `ProviderOperationId`. Within one payment aggregate,
+one `ProviderOperationId` represents one logical provider mutation across authorization,
+capture, and refund. Refund commands also carry a supplied `RefundId`.
 
 `PaymentEvent` represents facts. Events for provider operation lifecycle retain operation
 identity so historical replay remains unambiguous. Phase 2 intentionally does not retain
@@ -99,7 +101,7 @@ Duplicate-safe no-op is explicit:
 Conflicting duplicates are rejected:
 
 - same refund ID with different data returns `DuplicateRefundConflict`
-- a different logical refund reusing a historical provider operation ID returns `ProviderOperationAlreadyUsed`
+- a different logical provider mutation reusing an authorization, capture, or refund operation ID returns `ProviderOperationAlreadyUsed`
 - same provider operation ID with conflicting outcome returns `ConflictingOperationOutcome`
 - stale provider results for a different operation return `OperationMismatch`
 
@@ -129,12 +131,15 @@ unknown state requires an explicit resolution command for the same provider oper
 - I-19: persisted provider results must correlate to the current pending/unknown operation
 - I-20: corrupt refund replay cannot alter refund ID, operation ID, amount, currency, total bound, or partial/full meaning
 - I-21: payment diagnostics redact `PaymentMethodToken`
+- I-22: accepted logical provider mutations inside one aggregate do not reuse `ProviderOperationId`
 
 `PaymentState` remains public/readable for Phase 3 runtime integration. Supporting
 operation/refund records use package-restricted constructors so external modules cannot
 casually manufacture the invariant-sensitive pieces of successful financial states.
 Authoritative states must originate from `decide` + `evolve`; runtime code must not
-manually construct successful financial states from external data.
+manually construct successful financial states from external data. Scala enum case
+construction is not fully hidden in Phase 2; this is an explicit trust boundary rather
+than a claimed compiler guarantee.
 
 Deferred to later phases:
 

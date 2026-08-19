@@ -47,13 +47,13 @@ NotCreated
 | `ManualReview` | approve or reject manual review | capture | none | no | no |
 | `ReadyForAuthorization` | `AuthorizePayment` | capture | authorization operation supplied by command | no | no |
 | `AuthorizationPending` | authorization success/decline/unknown result for same operation | second different authorization | current authorization operation | no | no |
-| `Authorized` | `CapturePayment` | refund before capture | authorization record | no | no |
+| `Authorized` | `CapturePayment` with a new provider operation ID | capture reusing authorization operation, refund before capture | authorization record | no | no |
 | `Declined` | none in Phase 2 | capture | authorization record | no | no |
 | `AuthorizationUnknown` | explicit authorization resolution for same operation | fresh authorization | ambiguous authorization operation | yes | required |
 | `CapturePending` | capture success/failure/unknown result for same operation | second different capture | current capture operation | no | no |
 | `CaptureFailed` | duplicate same failure result only | conflicting capture success for same operation | failed capture operation | no | no |
 | `CaptureUnknown` | explicit capture resolution for same operation | fresh capture | ambiguous capture operation | yes | required |
-| `Captured` | refund request within remaining amount | second capture, over-refund, wrong currency | capture record | no | no |
+| `Captured` | refund request within remaining amount using a new provider operation ID | second capture, over-refund, wrong currency, refund reusing authorization/capture operation | capture record | no | no |
 | `RefundPending` | refund success/failure/unknown result for same operation | conflicting refund, different operation result | current refund operation and refund ID | no | no |
 | `PartiallyRefunded` | refund request within remaining amount | over-refund, wrong currency | capture record and refund history | no | no |
 | `RefundFailed` | no new retry semantics in Phase 2 | conflicting result for same operation | failed refund operation | no | no |
@@ -72,6 +72,14 @@ the same logical command or successful result:
 
 Conflicting replay returns a typed error and emits no events.
 
+## Provider Operation Identity
+
+Within a single payment aggregate, a `ProviderOperationId` identifies exactly one logical
+provider mutation. Authorization, capture, and each logical refund must use distinct
+operation IDs. Exact duplicate commands for the same in-flight or completed logical
+mutation keep their explicit no-op semantics; different logical mutations reusing an
+existing operation ID fail with `ProviderOperationAlreadyUsed`.
+
 ## Invalid History
 
 Command rejection and event-history corruption are different:
@@ -87,8 +95,8 @@ amount, currency, total refund bound, and whether the persisted event kind is pa
 full according to the resulting financial state.
 
 `InvalidPaymentHistory` diagnostics include state kind, event kind, and a safe reason. They
-do not interpolate the full state/event graph and do not expose raw `PaymentMethodToken`
-values.
+do not retain or interpolate the full state/event graph and do not expose raw
+`PaymentMethodToken` values.
 
 ## State Construction Boundary
 
@@ -98,4 +106,5 @@ constructors to make impossible financial states harder to manufacture outside t
 domain's transition implementation. The Phase 2 contract is that authoritative state is
 produced by `PaymentDecider.evolve`; runtime code must not manually manufacture successful
 financial states such as `Captured`, `PartiallyRefunded`, or `Refunded` from external
-inputs.
+inputs. Full mechanical hiding of every enum case constructor is deferred because it would
+require a larger representation redesign before Phase 3 runtime integration.
