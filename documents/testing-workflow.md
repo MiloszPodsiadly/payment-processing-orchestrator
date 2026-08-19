@@ -4,16 +4,21 @@ Phase 1 provides the testing platform only. Payment behavior tests start in Phas
 
 ## Test Categories
 
-- Fast unit/module tests: `sbt test`
+- Local fast feedback: `sbt test`
+- Full fast-test verification: `sbt testFull`
 - Formatting verification: `sbt "scalafmtSbtCheck; scalafmtCheckAll"`
 - Static analysis: `sbt "scalafixAll --check"`
 - Architecture checks: `sbt verifyArchitecture`
 - Integration-test compilation: `sbt integrationTests/Test/compile`
-- Full CI-equivalent local check: `sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; test; verifyArchitecture; integrationTests/Test/compile"`
+- Full CI-equivalent local check: `sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; testFull; verifyArchitecture; integrationTests/Test/compile"`
 
-`sbt test` is intentionally reserved for fast unit/module tests. The `integration-tests`
-project is executed through explicit commands so future Cassandra/Testcontainers tests do
-not become an accidental dependency of the default fast test workflow.
+`sbt test` is intentionally kept as normal sbt incremental/cache-aware feedback for
+local fast unit/module tests. Mandatory CI uses `sbt testFull` so the complete fast
+test suite is physically executed on the current HEAD.
+
+The `integration-tests` project remains explicitly invoked. In Phase 1, CI compiles
+integration-test sources through `sbt integrationTests/Test/compile`; it does not execute
+future Cassandra/Testcontainers integration suites as part of the fast test workflow.
 
 ## Current Test Coverage
 

@@ -39,7 +39,7 @@ jobs:
         run: sbt "scalafixAll --check"
 
       - name: Fast tests
-        run: sbt test
+        run: sbt testFull
 
       - name: Architecture checks
         run: sbt verifyArchitecture

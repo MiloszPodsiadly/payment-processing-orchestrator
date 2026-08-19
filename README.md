@@ -77,16 +77,23 @@ This repository currently contains the technical foundation only. Payment busine
 ```powershell
 sbt "clean; compile"
 sbt test
+sbt testFull
 sbt "scalafmtSbtCheck; scalafmtCheckAll"
 sbt "scalafixAll --check"
 sbt verifyArchitecture
 sbt integrationTests/Test/compile
 ```
 
+`sbt test` is the local fast feedback command and may use normal sbt
+incremental/cache-aware behavior. `sbt testFull` runs the complete fast test suite and is
+the mandatory CI fast-test command. Integration tests remain separate; Phase 1 CI compiles
+them with `sbt integrationTests/Test/compile` and does not execute future infrastructure
+integration suites in the default fast-test path.
+
 Full local CI-equivalent check:
 
 ```powershell
-sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; test; verifyArchitecture; integrationTests/Test/compile"
+sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; testFull; verifyArchitecture; integrationTests/Test/compile"
 ```
 
 The JVM does not automatically read `.env`. Either export `PAYMENT_*` variables in the
