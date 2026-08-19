@@ -57,11 +57,23 @@ object ProviderOperationId:
 enum InvalidPaymentMethodToken:
   case Blank
 
-opaque type PaymentMethodToken = String
+final class PaymentMethodToken private (val value: String):
+  override def equals(other: Any): Boolean =
+    other match
+      case that: PaymentMethodToken => value == that.value
+      case _ => false
+
+  override def hashCode(): Int =
+    value.hashCode
+
+  override def toString: String =
+    "[REDACTED]"
 
 object PaymentMethodToken:
   def from(value: String): Either[InvalidPaymentMethodToken, PaymentMethodToken] =
     val normalized = value.trim
-    Either.cond(normalized.nonEmpty, normalized, InvalidPaymentMethodToken.Blank)
-
-  extension (token: PaymentMethodToken) def value: String = token
+    Either.cond(
+      normalized.nonEmpty,
+      new PaymentMethodToken(normalized),
+      InvalidPaymentMethodToken.Blank
+    )

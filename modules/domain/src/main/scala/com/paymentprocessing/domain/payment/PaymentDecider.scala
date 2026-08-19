@@ -87,10 +87,12 @@ object PaymentDecider:
         Left(PaymentError.PaymentDeclined)
 
       case (
-            PaymentState.Authorized(_, _),
+            PaymentState.Authorized(_, authorization),
             PaymentCommand.CapturePayment(operationId, occurredAt)
           ) =>
-        Right(List(PaymentEvent.CaptureRequested(operationId, occurredAt)))
+        if authorization.operationId == operationId then
+          Left(PaymentError.ProviderOperationAlreadyUsed(operationId))
+        else Right(List(PaymentEvent.CaptureRequested(operationId, occurredAt)))
 
       case (PaymentState.CapturePending(_, _, expected), CaptureResultCommand(result)) =>
         matchOperation(expected, result.operationId).map(_ => List(result.toEvent))
@@ -512,28 +514,36 @@ object PaymentDecider:
   ): Either[PaymentError, List[PaymentEvent]] =
     val data = refundableData(state)
 
-    val completedReplay = completedRefundReplay(data.refunds, command)
-    if completedReplay.isDefined then completedReplay.get
-    else if data.refunds.exists(_.operationId == command.operationId) then
-      Left(PaymentError.ProviderOperationAlreadyUsed(command.operationId))
-    else if command.amount.currency != data.capture.amount.currency then
-      Left(PaymentError.RefundCurrencyMismatch)
-    else
-      val totalAfterRefund = totalRefunded(data.refunds) + command.amount.amount
-      val capturedAmount = data.capture.amount.amount
+    completedRefundReplay(data.refunds, command) match
+      case Some(result) => result
+      case None if providerOperationAlreadyUsed(data, command.operationId) =>
+        Left(PaymentError.ProviderOperationAlreadyUsed(command.operationId))
+      case None if command.amount.currency != data.capture.amount.currency =>
+        Left(PaymentError.RefundCurrencyMismatch)
+      case None =>
+        val totalAfterRefund = totalRefunded(data.refunds) + command.amount.amount
+        val capturedAmount = data.capture.amount.amount
 
-      if totalAfterRefund > capturedAmount then Left(PaymentError.RefundExceedsCapturedAmount)
-      else
-        Right(
-          List(
-            PaymentEvent.RefundRequested(
-              command.refundId,
-              command.operationId,
-              command.amount,
-              command.occurredAt
+        if totalAfterRefund > capturedAmount then Left(PaymentError.RefundExceedsCapturedAmount)
+        else
+          Right(
+            List(
+              PaymentEvent.RefundRequested(
+                command.refundId,
+                command.operationId,
+                command.amount,
+                command.occurredAt
+              )
             )
           )
-        )
+
+  private def providerOperationAlreadyUsed(
+      data: RefundableData,
+      operationId: ProviderOperationId
+  ): Boolean =
+    data.authorization.operationId == operationId ||
+      data.capture.operationId == operationId ||
+      data.refunds.exists(_.operationId == operationId)
 
   private def completedRefundReplay(
       state: PaymentState,
@@ -570,6 +580,8 @@ object PaymentDecider:
     then Right(Nil)
     else if pending.refundId == command.refundId then
       Left(PaymentError.DuplicateRefundConflict(command.refundId))
+    else if pending.operationId == command.operationId then
+      Left(PaymentError.ProviderOperationAlreadyUsed(command.operationId))
     else Left(inProgressOrMismatch(pending.operationId, command.operationId))
 
   private def duplicateCompletedRefundResult(
@@ -813,14 +825,21 @@ object PaymentDecider:
     throw InvalidPaymentHistory(state, event, reason)
 
 final case class InvalidPaymentHistory(
-    state: PaymentState,
-    event: PaymentEvent,
-    reason: String = "event is not legal for current state"
+    stateKind: String,
+    eventKind: String,
+    reason: String
 ) extends IllegalStateException(
-      s"Invalid payment event history: state=${InvalidPaymentHistory.stateKind(state)}, event=${InvalidPaymentHistory.eventKind(event)}, reason=$reason"
+      s"Invalid payment event history: state=$stateKind, event=$eventKind, reason=$reason"
     )
 
 object InvalidPaymentHistory:
+  def apply(
+      state: PaymentState,
+      event: PaymentEvent,
+      reason: String = "event is not legal for current state"
+  ): InvalidPaymentHistory =
+    InvalidPaymentHistory(stateKind(state), eventKind(event), reason)
+
   def stateKind(state: PaymentState): String =
     state.productPrefix
 

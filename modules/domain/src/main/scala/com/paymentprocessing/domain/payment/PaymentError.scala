@@ -12,7 +12,6 @@ enum PaymentError:
   case ConflictingOperationOutcome(operationId: ProviderOperationId)
   case FraudRejected
   case PaymentDeclined
-  case PaymentNotAuthorized
   case PaymentNotCaptured
   case PaymentAlreadyCaptured
   case PaymentAlreadyRefunded
