@@ -5,9 +5,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Require-Command {
+    param([string[]] $ProvidedCommand)
+
+    if ($ProvidedCommand.Count -eq 0) {
+        throw "ERROR: command required. Usage: .\scripts\windows\run-with-env.ps1 -- <command> [args...]"
+    }
+
+    if ($ProvidedCommand[0] -eq "--" -and $ProvidedCommand.Count -eq 1) {
+        throw "ERROR: command required. Usage: .\scripts\windows\run-with-env.ps1 -- <command> [args...]"
+    }
+}
+
+Require-Command -ProvidedCommand $Command
+
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $examplePath = Join-Path $root ".env.example"
-$envPath = Join-Path $root ".env"
+$envPath = if ($env:PAYMENT_ENV_FILE) { $env:PAYMENT_ENV_FILE } else { Join-Path $root ".env" }
 
 if (-not (Test-Path -LiteralPath $examplePath)) {
     throw ".env.example not found at $examplePath"
@@ -39,23 +53,8 @@ Get-Content -LiteralPath $envPath | ForEach-Object {
     Set-Item -LiteralPath "Env:$name" -Value $value
 }
 
-if ($Command.Count -eq 0) {
-    Get-ChildItem Env:PAYMENT_* | Sort-Object Name | ForEach-Object {
-        Write-Output "$($_.Name)=$($_.Value)"
-    }
-    exit 0
-}
-
 if ($Command[0] -eq "--") {
-    if ($Command.Count -eq 1) {
-        throw "No command provided after --"
-    }
-
     $Command = $Command[1..($Command.Count - 1)]
-}
-
-if ($Command.Count -eq 0) {
-    throw "No command provided after --"
 }
 
 $arguments = @()
@@ -63,5 +62,6 @@ if ($Command.Count -gt 1) {
     $arguments = $Command[1..($Command.Count - 1)]
 }
 
+$ErrorActionPreference = "Continue"
 & $Command[0] @arguments
 exit $LASTEXITCODE

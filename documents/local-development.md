@@ -43,6 +43,9 @@ environment variables through `${?PAYMENT_*}` substitutions.
 from `.env.example` when missing, load it for the child command, and do not modify the
 parent shell environment.
 
+The wrappers require an explicit command. Running them without a command exits non-zero
+and does not print loaded `PAYMENT_*` values.
+
 Windows:
 
 ```powershell

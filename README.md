@@ -37,11 +37,13 @@ This repository currently contains the technical foundation only. Payment busine
 
 - sbt multi-project structure is defined.
 - Module dependency direction is encoded in the sbt graph and checked by `verifyArchitecture`.
+- `domain` and `application` production compile dependencies are restricted to an explicit approved set.
 - Formatting and static-analysis tasks are configured.
 - Typed startup configuration loading exists in `bootstrap`.
 - Configuration tests validate explicit runtime environment, typed provider mode, mandatory fields, invalid values, and unsupported production runtime.
 - Local Cassandra infrastructure is defined in `compose.yaml`.
 - CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
+- Direct GitHub Actions are pinned to immutable commit SHAs.
 
 ## Verified Locally
 
@@ -49,7 +51,7 @@ This repository currently contains the technical foundation only. Payment busine
 - `docker compose config` parses the Cassandra Compose file.
 - `docker compose up -d cassandra` starts Cassandra and the container reaches `healthy`.
 - Windows and macOS/Linux environment wrapper scripts create `.env` from `.env.example` when missing and load it only for the child process they run.
-- Static boundary search, expected directory checks, compile dependency ownership checks, and project graph checks are exposed through `verifyArchitecture`.
+- Static boundary search, expected directory checks, approved compile dependency checks, known-forbidden dependency checks, and project graph checks are exposed through `verifyArchitecture`.
 
 ## What Does Not Exist Yet
 
@@ -90,6 +92,7 @@ sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; te
 The JVM does not automatically read `.env`. Either export `PAYMENT_*` variables in the
 shell before launching sbt/application code, or run commands through the local wrappers.
 The wrappers create `.env` from `.env.example` only when `.env` is missing.
+They require an explicit child command and never dump loaded environment values by default.
 
 Windows:
 
