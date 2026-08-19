@@ -23,8 +23,8 @@ future Cassandra/Testcontainers integration suites as part of the fast test work
 ## Current Test Coverage
 
 - `domain` has primitive value tests for typed IDs, provider operation IDs, payment method tokens, currency metadata, and Money validation.
-- `domain` has unit tests for the Payment protocol ADTs, legal `decide` / `evolve` paths, duplicate-safe no-op semantics, stale operation rejection, unknown-outcome safety, financial invariant hardening, and corrupt event history failure.
-- `domain` has property-based tests for Money precision, core payment immutability, refund bounds, single capture, fraud/decline safety, unknown safety, duplicate mutation intent, and decide/evolve consistency.
+- `domain` has unit tests for the Payment protocol ADTs, legal `decide` / `evolve` paths, duplicate-safe no-op semantics, completed refund command replay, refund-failure duplicate semantics, stale operation rejection, replay operation correlation, unknown-outcome safety, financial invariant hardening, token diagnostic redaction, and corrupt event history failure.
+- `domain` has property-based tests for Money precision, core payment immutability, refund bounds, single capture, fraud/decline safety, unknown safety, duplicate mutation intent, decide/evolve consistency, and corrupted refund-history mutation rejection.
 - `domain` has transition-matrix tests covering every implemented `PaymentState`, important illegal commands, wrong provider operation results, duplicate results, out-of-order results, and invalid event history.
 - `bootstrap` has configuration loader tests covering explicit runtime environment, typed provider mode, missing mandatory fields, invalid values, unsupported production runtime, and unsafe production placeholders.
 - `integration-tests` has source boundary checks for forbidden framework imports in `domain` and `application`, including negative fixtures for missing directories and forbidden imports.

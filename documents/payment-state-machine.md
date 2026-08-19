@@ -81,3 +81,21 @@ Command rejection and event-history corruption are different:
   the current replay state
 
 This prevents event replay from silently repairing or ignoring corrupted histories.
+Replay validation includes provider operation correlation for authorization, capture and
+refund outcomes. Refund replay also validates refund identity, provider operation identity,
+amount, currency, total refund bound, and whether the persisted event kind is partial or
+full according to the resulting financial state.
+
+`InvalidPaymentHistory` diagnostics include state kind, event kind, and a safe reason. They
+do not interpolate the full state/event graph and do not expose raw `PaymentMethodToken`
+values.
+
+## State Construction Boundary
+
+`PaymentState` is intentionally readable so Phase 3 runtime code can hold, pattern match,
+pass, and recover states. Supporting operation/refund records have package-restricted
+constructors to make impossible financial states harder to manufacture outside the
+domain's transition implementation. The Phase 2 contract is that authoritative state is
+produced by `PaymentDecider.evolve`; runtime code must not manually manufacture successful
+financial states such as `Captured`, `PartiallyRefunded`, or `Refunded` from external
+inputs.

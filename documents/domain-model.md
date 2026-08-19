@@ -18,7 +18,8 @@ The domain uses distinct opaque identifier types:
 
 UUID-backed identifiers are constructed from UUID values supplied by outer layers. The
 domain does not generate UUIDs. `ProviderOperationId` and `PaymentMethodToken` reject
-blank strings and do not model raw payment credentials.
+blank strings, canonicalize surrounding whitespace by storing the trimmed value, and do
+not model raw payment credentials.
 
 ## Money And Currency
 
@@ -64,7 +65,9 @@ provider mutations carry a supplied `ProviderOperationId`. Refund commands also 
 supplied `RefundId`.
 
 `PaymentEvent` represents facts. Events for provider operation lifecycle retain operation
-identity so historical replay remains unambiguous.
+identity so historical replay remains unambiguous. Phase 2 intentionally does not retain
+future reconciliation placeholder events; only facts with current `decide` / `evolve`
+semantics are part of the domain contract.
 
 `PaymentError` represents expected business rejections. Invalid persisted event history is
 not a business rejection; `evolve` fails loudly with `InvalidPaymentHistory`.
@@ -77,7 +80,10 @@ not a business rejection; `evolve` fails loudly with `InvalidPaymentHistory`.
 - `Right(events)` for accepted facts
 - `Right(Nil)` for duplicate-safe no-op replay where explicitly supported
 
-`PaymentDecider.evolve(state, event)` is pure and applies persisted facts to state.
+`PaymentDecider.evolve(state, event)` is pure and applies persisted facts to state. Replay
+is validated as an input boundary: provider result identity must match the pending or
+unknown operation identity, and refund replay validates `RefundId`, `ProviderOperationId`,
+amount, currency, total refund bounds, and partial/full event semantics.
 
 ## Duplicate Semantics
 
@@ -86,11 +92,14 @@ Duplicate-safe no-op is explicit:
 - repeating the same in-flight authorization command with the same operation ID returns `Right(Nil)`
 - repeating the same in-flight capture command with the same operation ID returns `Right(Nil)`
 - repeating the same in-flight refund command with the same `RefundId`, operation ID, and amount returns `Right(Nil)`
+- repeating the exact already completed `RefundPayment` returns `Right(Nil)`
 - repeating an already applied success result for the same operation returns `Right(Nil)`
+- repeating an already applied refund failure result for the same operation returns `Right(Nil)`
 
 Conflicting duplicates are rejected:
 
 - same refund ID with different data returns `DuplicateRefundConflict`
+- a different logical refund reusing a historical provider operation ID returns `ProviderOperationAlreadyUsed`
 - same provider operation ID with conflicting outcome returns `ConflictingOperationOutcome`
 - stale provider results for a different operation return `OperationMismatch`
 
@@ -117,6 +126,15 @@ unknown state requires an explicit resolution command for the same provider oper
 - I-16: legal state transitions only
 - I-17: refund requires capture
 - I-18: payment amount and currency are immutable after creation
+- I-19: persisted provider results must correlate to the current pending/unknown operation
+- I-20: corrupt refund replay cannot alter refund ID, operation ID, amount, currency, total bound, or partial/full meaning
+- I-21: payment diagnostics redact `PaymentMethodToken`
+
+`PaymentState` remains public/readable for Phase 3 runtime integration. Supporting
+operation/refund records use package-restricted constructors so external modules cannot
+casually manufacture the invariant-sensitive pieces of successful financial states.
+Authoritative states must originate from `decide` + `evolve`; runtime code must not
+manually construct successful financial states from external data.
 
 Deferred to later phases:
 

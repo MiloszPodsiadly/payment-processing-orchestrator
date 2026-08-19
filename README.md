@@ -42,7 +42,7 @@ This repository currently contains the Phase 1 technical foundation and the pure
 - Typed startup configuration loading exists in `bootstrap`.
 - Configuration tests validate explicit runtime environment, typed provider mode, mandatory fields, invalid values, and unsupported production runtime.
 - Pure domain identifiers, Money, Currency, Payment core data, state, commands, events, errors, `decide`, and `evolve` exist in `modules/domain`.
-- Domain rules cover fraud, authorization, capture, refund, duplicate-safe replay, stale provider results, unknown outcome states, and refund bounds.
+- Domain rules cover fraud, authorization, capture, refund, duplicate-safe replay, completed refund idempotency, stale provider results, provider operation correlation, unknown outcome states, replay integrity, token diagnostic redaction, and refund bounds.
 - Local Cassandra infrastructure is defined in `compose.yaml`.
 - CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
 - Direct GitHub Actions are pinned to immutable commit SHAs.
@@ -54,7 +54,7 @@ This repository currently contains the Phase 1 technical foundation and the pure
 - `docker compose up -d cassandra` starts Cassandra and the container reaches `healthy`.
 - Windows and macOS/Linux environment wrapper scripts create `.env` from `.env.example` when missing and load it only for the child process they run.
 - Static boundary search, expected directory checks, approved compile dependency checks, known-forbidden dependency checks, and project graph checks are exposed through `verifyArchitecture`.
-- Domain unit, property-based, hardening, and transition-matrix tests run through `sbt testFull`.
+- Domain unit, property-based, hardening, corrupted-history, and transition-matrix tests run through `sbt testFull`.
 
 ## What Does Not Exist Yet
 
