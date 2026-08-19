@@ -103,6 +103,89 @@ final class PaymentHardeningSuite extends FunSuite:
     )
   }
 
+  test("evolve rejects provider operation identity mismatch in pending and unknown states") {
+    assertEquals(
+      PaymentDecider
+        .evolve(
+          authorizationPendingState,
+          PaymentEvent.PaymentAuthorized(operation("auth-1"), now)
+        )
+        .productPrefix,
+      "Authorized"
+    )
+
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        authorizationPendingState,
+        PaymentEvent.PaymentAuthorized(operation("auth-wrong"), now)
+      )
+    }
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        authorizationPendingState,
+        PaymentEvent.PaymentDeclined(operation("auth-wrong"), now)
+      )
+    }
+
+    val authorizationUnknown =
+      PaymentDecider.evolve(
+        authorizationPendingState,
+        PaymentEvent.AuthorizationOutcomeUnknown(operation("auth-1"), now)
+      )
+
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        authorizationUnknown,
+        PaymentEvent.PaymentAuthorized(operation("auth-wrong"), now)
+      )
+    }
+
+    assertEquals(
+      PaymentDecider
+        .evolve(capturePendingState, PaymentEvent.PaymentCaptured(operation("capture-1"), now))
+        .productPrefix,
+      "Captured"
+    )
+
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        capturePendingState,
+        PaymentEvent.PaymentCaptured(operation("capture-wrong"), now)
+      )
+    }
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        capturePendingState,
+        PaymentEvent.CaptureFailed(operation("capture-wrong"), now)
+      )
+    }
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        capturePendingState,
+        PaymentEvent.CaptureOutcomeUnknown(operation("capture-wrong"), now)
+      )
+    }
+
+    val captureUnknown =
+      PaymentDecider.evolve(
+        capturePendingState,
+        PaymentEvent.CaptureOutcomeUnknown(operation("capture-1"), now)
+      )
+
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        captureUnknown,
+        PaymentEvent.PaymentCaptured(operation("capture-wrong"), now)
+      )
+    }
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        captureUnknown,
+        PaymentEvent.CaptureFailed(operation("capture-wrong"), now)
+      )
+    }
+  }
+
   test("unknown outcomes cannot be bypassed with fresh mutation commands") {
     val authorizationUnknown =
       PaymentDecider.evolve(
@@ -231,6 +314,178 @@ final class PaymentHardeningSuite extends FunSuite:
         .decide(partiallyRefunded, PaymentCommand.RecordRefundFailed(operation("refund-1"), now)),
       Left(PaymentError.ConflictingOperationOutcome(operation("refund-1")))
     )
+    assertEquals(
+      PaymentDecider.decide(
+        partiallyRefunded,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-1"), money("10.00"), now)
+      ),
+      Right(Nil)
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        partiallyRefunded,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-2"), money("10.00"), now)
+      ),
+      Left(PaymentError.DuplicateRefundConflict(refundId(1)))
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        partiallyRefunded,
+        PaymentCommand.RefundPayment(refundId(2), operation("refund-1"), money("10.00"), now)
+      ),
+      Left(PaymentError.ProviderOperationAlreadyUsed(operation("refund-1")))
+    )
+  }
+
+  test("refund replay validates pending identity, amount, currency, bounds, and event kind") {
+    val pending =
+      PaymentDecider.evolve(
+        capturedState,
+        decideOne(
+          capturedState,
+          PaymentCommand.RefundPayment(refundId(1), operation("refund-1"), money("10.00"), now)
+        )
+      )
+
+    assertEquals(
+      PaymentDecider
+        .evolve(
+          pending,
+          PaymentEvent.PaymentPartiallyRefunded(
+            refundId(1),
+            operation("refund-1"),
+            money("10.00"),
+            now
+          )
+        )
+        .productPrefix,
+      "PartiallyRefunded"
+    )
+
+    List(
+      PaymentEvent.PaymentPartiallyRefunded(
+        refundId(2),
+        operation("refund-1"),
+        money("10.00"),
+        now
+      ),
+      PaymentEvent.PaymentPartiallyRefunded(
+        refundId(1),
+        operation("refund-2"),
+        money("10.00"),
+        now
+      ),
+      PaymentEvent.PaymentPartiallyRefunded(
+        refundId(1),
+        operation("refund-1"),
+        money("11.00"),
+        now
+      ),
+      PaymentEvent.PaymentPartiallyRefunded(refundId(1), operation("refund-1"), eur("10.00"), now),
+      PaymentEvent.PaymentRefunded(refundId(1), operation("refund-1"), money("10.00"), now)
+    ).foreach { event =>
+      intercept[InvalidPaymentHistory] {
+        PaymentDecider.evolve(pending, event)
+      }
+    }
+
+    val partiallyRefunded =
+      applyRefund(capturedState, refundId(9), operation("refund-9"), money("90.00"))
+
+    List(
+      PaymentEvent.RefundRequested(refundId(10), operation("refund-10"), money("10.01"), now),
+      PaymentEvent.RefundRequested(refundId(10), operation("refund-10"), eur("1.00"), now),
+      PaymentEvent.RefundRequested(refundId(9), operation("refund-11"), money("1.00"), now),
+      PaymentEvent.RefundRequested(refundId(11), operation("refund-9"), money("1.00"), now)
+    ).foreach { event =>
+      intercept[InvalidPaymentHistory] {
+        PaymentDecider.evolve(partiallyRefunded, event)
+      }
+    }
+  }
+
+  test("full completed refund command replay is duplicate-safe") {
+    val refunded = applyRefund(capturedState, refundId(1), operation("refund-1"), money("100.00"))
+
+    assertEquals(
+      PaymentDecider.decide(
+        refunded,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-1"), money("100.00"), now)
+      ),
+      Right(Nil)
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        refunded,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-2"), money("100.00"), now)
+      ),
+      Left(PaymentError.DuplicateRefundConflict(refundId(1)))
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        refunded,
+        PaymentCommand.RefundPayment(refundId(2), operation("refund-1"), money("1.00"), now)
+      ),
+      Left(PaymentError.ProviderOperationAlreadyUsed(operation("refund-1")))
+    )
+  }
+
+  test("refund failed duplicate and conflicting result semantics are explicit") {
+    val pending =
+      PaymentDecider.evolve(
+        capturedState,
+        decideOne(
+          capturedState,
+          PaymentCommand.RefundPayment(refundId(1), operation("refund-1"), money("10.00"), now)
+        )
+      )
+    val failed =
+      PaymentDecider.evolve(
+        pending,
+        decideOne(pending, PaymentCommand.RecordRefundFailed(operation("refund-1"), now))
+      )
+
+    assertEquals(
+      PaymentDecider.decide(failed, PaymentCommand.RecordRefundFailed(operation("refund-1"), now)),
+      Right(Nil)
+    )
+    assertEquals(
+      PaymentDecider
+        .decide(failed, PaymentCommand.RecordRefundSucceeded(operation("refund-1"), now)),
+      Left(PaymentError.ConflictingOperationOutcome(operation("refund-1")))
+    )
+    assertEquals(
+      PaymentDecider.decide(failed, PaymentCommand.RecordRefundFailed(operation("refund-2"), now)),
+      Left(PaymentError.OperationMismatch(operation("refund-1"), operation("refund-2")))
+    )
+  }
+
+  test("payment diagnostics redact payment method token") {
+    val rawToken = "tok_NO_MERCY_DO_NOT_LOG_123"
+    val sensitivePayment =
+      Payment(
+        PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000501")),
+        TenantId.from(UUID.fromString("00000000-0000-0000-0000-000000000502")),
+        CustomerId.from(UUID.fromString("00000000-0000-0000-0000-000000000503")),
+        MerchantId.from(UUID.fromString("00000000-0000-0000-0000-000000000504")),
+        money("100.00"),
+        PaymentMethodToken.from(rawToken).fold(error => fail(error.toString), identity),
+        now
+      )
+
+    assert(!sensitivePayment.toString.contains(rawToken))
+    assert(sensitivePayment.toString.contains("[REDACTED]"))
+
+    val exception = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        PaymentState.Created(sensitivePayment),
+        PaymentEvent.PaymentCaptured(operation("capture-1"), now)
+      )
+    }
+
+    assert(!exception.getMessage.contains(rawToken))
+    assert(exception.getMessage.contains("Created"))
+    assert(exception.getMessage.contains("PaymentCaptured"))
   }
 
   test("payment core data is unchanged across legal transitions") {

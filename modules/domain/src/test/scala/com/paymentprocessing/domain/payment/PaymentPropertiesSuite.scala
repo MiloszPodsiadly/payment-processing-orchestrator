@@ -251,6 +251,38 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
     }
   }
 
+  property("mutated refund event histories are rejected during replay") {
+    forAll(genPayment) { payment =>
+      val captured = capturedState(payment)
+      val refundIdValue = refundId(50)
+      val operationId = operation("refund-history-mutation")
+      val pending = decideAndEvolve(
+        captured,
+        PaymentCommand.RefundPayment(refundIdValue, operationId, payment.amount, payment.createdAt)
+      )
+      val wrongAmount = incrementByMinorUnit(payment.amount)
+
+      val mutatedEvents = List(
+        PaymentEvent.PaymentRefunded(refundId(51), operationId, payment.amount, payment.createdAt),
+        PaymentEvent.PaymentRefunded(
+          refundIdValue,
+          operation("refund-history-other"),
+          payment.amount,
+          payment.createdAt
+        ),
+        PaymentEvent.PaymentRefunded(refundIdValue, operationId, wrongAmount, payment.createdAt),
+        PaymentEvent.PaymentPartiallyRefunded(
+          refundIdValue,
+          operationId,
+          payment.amount,
+          payment.createdAt
+        )
+      )
+
+      mutatedEvents.forall(event => throwsInvalidHistory(pending, event))
+    }
+  }
+
   private val genCurrency: Gen[Currency] =
     Gen.oneOf(Currency.values.toSeq)
 
@@ -297,6 +329,12 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
 
   private def moneyFromMinorUnits(minorUnits: Long, currency: Currency): Money =
     Money.from(decimalFromMinorUnits(minorUnits, currency), currency).toOption.get
+
+  private def incrementByMinorUnit(money: Money): Money =
+    Money
+      .from(money.amount + decimalFromMinorUnits(1L, money.currency), money.currency)
+      .toOption
+      .get
 
   private def effectiveScale(amount: BigDecimal): Int =
     amount.bigDecimal.stripTrailingZeros.scale.max(0)
@@ -392,6 +430,12 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
 
   private def acceptedEvents(state: PaymentState, command: PaymentCommand): List[PaymentEvent] =
     PaymentDecider.decide(state, command).getOrElse(Nil)
+
+  private def throwsInvalidHistory(state: PaymentState, event: PaymentEvent): Boolean =
+    try
+      val _ = PaymentDecider.evolve(state, event)
+      false
+    catch case _: InvalidPaymentHistory => true
 
   private def isNotExternalMutationIntent(event: PaymentEvent): Boolean =
     event match

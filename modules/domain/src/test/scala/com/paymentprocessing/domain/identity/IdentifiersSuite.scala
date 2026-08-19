@@ -42,6 +42,13 @@ final class IdentifiersSuite extends FunSuite:
     )
   }
 
+  test("canonicalizes surrounding whitespace for provider operation identifiers") {
+    assertEquals(
+      ProviderOperationId.from("  provider-operation-1\t").map(_.value),
+      Right("provider-operation-1")
+    )
+  }
+
   test("rejects blank payment method tokens") {
     assertEquals(
       PaymentMethodToken.from("\t"),
@@ -52,6 +59,13 @@ final class IdentifiersSuite extends FunSuite:
   test("accepts non-blank payment method tokens") {
     assertEquals(
       PaymentMethodToken.from("tok_customer_1").map(_.value),
+      Right("tok_customer_1")
+    )
+  }
+
+  test("canonicalizes surrounding whitespace for payment method tokens") {
+    assertEquals(
+      PaymentMethodToken.from("  tok_customer_1\t").map(_.value),
       Right("tok_customer_1")
     )
   }
