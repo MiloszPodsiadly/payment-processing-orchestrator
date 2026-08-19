@@ -86,6 +86,9 @@ not a business rejection; `evolve` fails loudly with `InvalidPaymentHistory`.
 is validated as an input boundary: provider result identity must match the pending or
 unknown operation identity, and refund replay validates `RefundId`, `ProviderOperationId`,
 amount, currency, total refund bounds, and partial/full event semantics.
+Provider operation freshness is enforced symmetrically in `decide` and `evolve`; replay
+rejects persisted capture and refund intent events that reuse an operation ID already
+assigned to a different provider mutation.
 
 ## Duplicate Semantics
 

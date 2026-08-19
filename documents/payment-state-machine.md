@@ -78,7 +78,9 @@ Within a single payment aggregate, a `ProviderOperationId` identifies exactly on
 provider mutation. Authorization, capture, and each logical refund must use distinct
 operation IDs. Exact duplicate commands for the same in-flight or completed logical
 mutation keep their explicit no-op semantics; different logical mutations reusing an
-existing operation ID fail with `ProviderOperationAlreadyUsed`.
+existing operation ID fail with `ProviderOperationAlreadyUsed`. Persisted-event replay
+enforces the same freshness rule by rejecting corrupted capture or refund intent events
+with `InvalidPaymentHistory`.
 
 ## Invalid History
 
