@@ -7,9 +7,9 @@ duplicate delivery, provider timeouts, crashes, authorization boundaries, and te
 
 ## Current Phase
 
-PHASE 1 - Repository Bootstrap
+PHASE 2 - Pure Payment Domain
 
-This repository currently contains the technical foundation only. Payment business behavior is planned but not implemented yet.
+This repository currently contains the Phase 1 technical foundation and the pure Phase 2 payment domain. Runtime integration is planned but not implemented yet.
 
 ## Core Direction
 
@@ -41,6 +41,8 @@ This repository currently contains the technical foundation only. Payment busine
 - Formatting and static-analysis tasks are configured.
 - Typed startup configuration loading exists in `bootstrap`.
 - Configuration tests validate explicit runtime environment, typed provider mode, mandatory fields, invalid values, and unsupported production runtime.
+- Pure domain identifiers, Money, Currency, Payment core data, state, commands, events, errors, `decide`, and `evolve` exist in `modules/domain`.
+- Domain rules cover fraud, authorization, capture, refund, duplicate-safe replay, completed refund idempotency, stale provider results, aggregate-wide provider operation uniqueness, provider operation correlation, unknown outcome states, replay integrity, full protocol token diagnostic redaction, and refund bounds.
 - Local Cassandra infrastructure is defined in `compose.yaml`.
 - CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
 - Direct GitHub Actions are pinned to immutable commit SHAs.
@@ -52,12 +54,10 @@ This repository currently contains the technical foundation only. Payment busine
 - `docker compose up -d cassandra` starts Cassandra and the container reaches `healthy`.
 - Windows and macOS/Linux environment wrapper scripts create `.env` from `.env.example` when missing and load it only for the child process they run.
 - Static boundary search, expected directory checks, approved compile dependency checks, known-forbidden dependency checks, and project graph checks are exposed through `verifyArchitecture`.
+- Domain unit, property-based, hardening, corrupted-history, ADT inventory, state-aware trace, and transition-matrix tests run through `sbt testFull`.
 
 ## What Does Not Exist Yet
 
-- Payment domain model
-- Payment state machine implementation
-- Payment commands and events
 - Pekko payment entity
 - Cassandra journal integration
 - Tapir payment API
@@ -76,6 +76,7 @@ This repository currently contains the technical foundation only. Payment busine
 
 ```powershell
 sbt "clean; compile"
+sbt "domain/Test/testFull"
 sbt test
 sbt testFull
 sbt "scalafmtSbtCheck; scalafmtCheckAll"
@@ -146,6 +147,8 @@ the sbt/BSP model as described in [Local Development](documents/local-developmen
 
 - [Phase 0 Architecture Charter](documents/phase-0-architecture-charter.md)
 - [Module Dependency Map](documents/module-dependency-map.md)
+- [Domain Model](documents/domain-model.md)
+- [Payment State Machine](documents/payment-state-machine.md)
 - [Configuration](documents/configuration.md)
 - [Testing Workflow](documents/testing-workflow.md)
 - [Local Development](documents/local-development.md)
