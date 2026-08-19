@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - PPO-*
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and quality gates
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@ca022c442f02ae7c8bc410bef1850fe15981d518 # v1
+
+      - name: Compile
+        run: sbt "clean; compile"
+
+      - name: Formatting
+        run: sbt "scalafmtSbtCheck; scalafmtCheckAll"
+
+      - name: Static analysis
+        run: sbt "scalafixAll --check"
+
+      - name: Fast tests
+        run: sbt testFull
+
+      - name: Architecture checks
+        run: sbt verifyArchitecture
+
+      - name: Integration-test compile
+        run: sbt integrationTests/Test/compile

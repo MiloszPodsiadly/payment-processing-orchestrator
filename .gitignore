@@ -12,9 +12,14 @@ project/project/
 
 .metals/
 .scala-build/
+.tools/
+
+.env
+.env.*
+!.env.example
 
 docs/
+MASTERPLAN.md
 
 .DS_Store
 Thumbs.db
-
