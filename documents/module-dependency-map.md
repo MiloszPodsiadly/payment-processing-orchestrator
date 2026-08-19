@@ -31,8 +31,11 @@ domain
 ## Enforcement
 
 - sbt project dependencies point inward only.
-- `domain` has no compile dependency on framework or infrastructure libraries.
-- `application` has no compile dependency on HTTP or storage implementations.
+- `verifyArchitecture` fails if expected module directories are missing.
+- `verifyArchitecture` checks that `domain` has no compile dependency on framework or infrastructure libraries.
+- `verifyArchitecture` checks that `application` has no compile dependency on HTTP, storage, actor runtime, provider-client, or JWT implementation libraries.
+- `verifyArchitecture` checks the direct sbt project graph against the approved dependency direction.
+- Test-scope libraries are allowed and are not treated as compile dependency violations.
 - `bootstrap` composes modules and owns typed startup configuration loading.
-- `integration-tests` includes a boundary scan that fails if forbidden imports appear in `domain` or `application`.
-
+- `integration-tests` includes a secondary source-boundary scan that fails if forbidden framework imports appear in `domain` or `application`.
+- The source-boundary scan has fixture tests proving it fails for missing expected directories and injected forbidden imports.

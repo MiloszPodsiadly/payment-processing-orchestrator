@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - PPO-*
 
 permissions:
   contents: read
@@ -16,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -28,13 +29,20 @@ jobs:
       - name: Set up sbt
         uses: sbt/setup-sbt@v1
 
-      - name: Run build checks
-        run: >
-          sbt
-          clean
-          scalafmtSbtCheck
-          scalafmtCheckAll
-          "scalafixAll --check"
-          test
-          integrationTests/Test/compile
+      - name: Compile
+        run: sbt "clean; compile"
 
+      - name: Formatting
+        run: sbt "scalafmtSbtCheck; scalafmtCheckAll"
+
+      - name: Static analysis
+        run: sbt "scalafixAll --check"
+
+      - name: Fast tests
+        run: sbt test
+
+      - name: Architecture checks
+        run: sbt verifyArchitecture
+
+      - name: Integration-test compile
+        run: sbt integrationTests/Test/compile
