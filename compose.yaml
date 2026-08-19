@@ -1,0 +1,26 @@
+services:
+  cassandra:
+    image: cassandra:5.0.8
+    container_name: payment-orchestrator-cassandra
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: payment-orchestrator-local
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_NUM_TOKENS: "16"
+      HEAP_NEWSIZE: 128M
+      MAX_HEAP_SIZE: 512M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES'"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  cassandra-data:
+
