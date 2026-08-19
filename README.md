@@ -36,20 +36,20 @@ This repository currently contains the technical foundation only. Payment busine
 ## Implemented In This Phase
 
 - sbt multi-project structure is defined.
-- Module dependency direction is encoded in the sbt graph.
+- Module dependency direction is encoded in the sbt graph and checked by `verifyArchitecture`.
 - Formatting and static-analysis tasks are configured.
 - Typed startup configuration loading exists in `bootstrap`.
-- Configuration tests validate mandatory fields and unsafe production placeholders.
+- Configuration tests validate explicit runtime environment, typed provider mode, mandatory fields, invalid values, and unsupported production runtime.
 - Local Cassandra infrastructure is defined in `compose.yaml`.
-- CI workflow is configured to run compile, formatting, lint, tests, and integration-test compilation.
+- CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
 
 ## Verified Locally
 
-- Full sbt gate passed with a local sbt 2.0.6 runner: `clean scalafmtSbtCheck scalafmtCheckAll "scalafixAll --check" test integrationTests/Test/compile`.
+- Full sbt gate passed with a local sbt 2.0.6 runner before PPO-1 remediation. Re-run the current commands below after changing the build.
 - `docker compose config` parses the Cassandra Compose file.
 - `docker compose up -d cassandra` starts Cassandra and the container reaches `healthy`.
-- Windows and macOS/Linux environment initialization scripts create `.env` from `.env.example` without overwriting an existing `.env`.
-- Static boundary search currently finds no forbidden framework imports in `domain` or `application`.
+- Windows and macOS/Linux environment wrapper scripts create `.env` from `.env.example` when missing and load it only for the child process they run.
+- Static boundary search, expected directory checks, compile dependency ownership checks, and project graph checks are exposed through `verifyArchitecture`.
 
 ## What Does Not Exist Yet
 
@@ -73,31 +73,34 @@ This repository currently contains the technical foundation only. Payment busine
 ## Commands
 
 ```powershell
-sbt clean compile
+sbt "clean; compile"
 sbt test
-sbt scalafmtSbtCheck scalafmtCheckAll
+sbt "scalafmtSbtCheck; scalafmtCheckAll"
 sbt "scalafixAll --check"
+sbt verifyArchitecture
 sbt integrationTests/Test/compile
 ```
 
 Full local CI-equivalent check:
 
 ```powershell
-sbt clean scalafmtSbtCheck scalafmtCheckAll "scalafixAll --check" test integrationTests/Test/compile
+sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; test; verifyArchitecture; integrationTests/Test/compile"
 ```
 
-Create local `.env` from the committed example.
+The JVM does not automatically read `.env`. Either export `PAYMENT_*` variables in the
+shell before launching sbt/application code, or run commands through the local wrappers.
+The wrappers create `.env` from `.env.example` only when `.env` is missing.
 
 Windows:
 
 ```powershell
-.\scripts\windows\init-env.ps1
+.\scripts\windows\run-with-env.ps1 -- sbt "bootstrap/Test/runMain com.paymentprocessing.bootstrap.config.AppConfigEnvironmentProbe"
 ```
 
 macOS/Linux:
 
 ```sh
-sh scripts/unix/init-env.sh
+sh scripts/unix/run-with-env.sh -- sbt "bootstrap/Test/runMain com.paymentprocessing.bootstrap.config.AppConfigEnvironmentProbe"
 ```
 
 Local Cassandra:
@@ -137,8 +140,6 @@ the sbt/BSP model as described in [Local Development](documents/local-developmen
 - [Testing Workflow](documents/testing-workflow.md)
 - [Local Development](documents/local-development.md)
 - [ADR Index](documents/adr/index.md)
-
-The local masterplan and prompt sources live under `docs/` during development and are intentionally excluded from commits.
 
 ## Quality Bar
 

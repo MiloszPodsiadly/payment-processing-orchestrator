@@ -19,6 +19,7 @@ project/project/
 !.env.example
 
 docs/
+MASTERPLAN.md
 
 .DS_Store
 Thumbs.db
