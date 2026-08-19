@@ -256,11 +256,29 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
       val captured = capturedState(payment)
       val refundIdValue = refundId(50)
       val operationId = operation("refund-history-mutation")
+      val freshRefundRequest =
+        PaymentEvent.RefundRequested(refundIdValue, operationId, payment.amount, payment.createdAt)
+      val freshReplayPending = PaymentDecider.evolve(captured, freshRefundRequest)
       val pending = decideAndEvolve(
         captured,
         PaymentCommand.RefundPayment(refundIdValue, operationId, payment.amount, payment.createdAt)
       )
       val wrongAmount = incrementByMinorUnit(payment.amount)
+
+      val reusedRequestEvents = List(
+        PaymentEvent.RefundRequested(
+          refundId(52),
+          operation("auth-property"),
+          payment.amount,
+          payment.createdAt
+        ),
+        PaymentEvent.RefundRequested(
+          refundId(53),
+          operation("capture-property"),
+          payment.amount,
+          payment.createdAt
+        )
+      )
 
       val mutatedEvents = List(
         PaymentEvent.PaymentRefunded(refundId(51), operationId, payment.amount, payment.createdAt),
@@ -279,6 +297,8 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
         )
       )
 
+      freshReplayPending.isInstanceOf[PaymentState.RefundPending] &&
+      reusedRequestEvents.forall(event => throwsInvalidHistory(captured, event)) &&
       mutatedEvents.forall(event => throwsInvalidHistory(pending, event))
     }
   }

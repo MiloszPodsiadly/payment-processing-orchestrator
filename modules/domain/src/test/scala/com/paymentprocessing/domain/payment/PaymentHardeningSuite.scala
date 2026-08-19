@@ -379,6 +379,47 @@ final class PaymentHardeningSuite extends FunSuite:
     )
   }
 
+  test("replay rejects provider operation reuse across logical mutation families") {
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        authorizedState,
+        PaymentEvent.CaptureRequested(operation("auth-1"), now)
+      )
+    }
+
+    PaymentDecider.evolve(
+      authorizedState,
+      PaymentEvent.CaptureRequested(operation("capture-replay"), now)
+    ) match
+      case PaymentState.CapturePending(_, authorization, operationId) =>
+        assertEquals(authorization.operationId, operation("auth-1"))
+        assertEquals(operationId, operation("capture-replay"))
+      case other => fail(s"Expected CapturePending, got ${other.productPrefix}")
+
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        capturedState,
+        PaymentEvent.RefundRequested(refundId(1), operation("auth-1"), money("10.00"), now)
+      )
+    }
+    val _ = intercept[InvalidPaymentHistory] {
+      PaymentDecider.evolve(
+        capturedState,
+        PaymentEvent.RefundRequested(refundId(2), operation("capture-1"), money("10.00"), now)
+      )
+    }
+
+    PaymentDecider.evolve(
+      capturedState,
+      PaymentEvent.RefundRequested(refundId(3), operation("refund-replay"), money("10.00"), now)
+    ) match
+      case PaymentState.RefundPending(_, _, _, _, pending) =>
+        assertEquals(pending.refundId, refundId(3))
+        assertEquals(pending.operationId, operation("refund-replay"))
+        assertEquals(pending.amount, money("10.00"))
+      case other => fail(s"Expected RefundPending, got ${other.productPrefix}")
+  }
+
   test("refund replay validates pending identity, amount, currency, bounds, and event kind") {
     val pending =
       PaymentDecider.evolve(

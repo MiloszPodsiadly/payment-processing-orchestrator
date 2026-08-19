@@ -290,6 +290,12 @@ object PaymentDecider:
             PaymentState.Authorized(payment, authorization),
             PaymentEvent.CaptureRequested(operationId, _)
           ) =>
+        if providerOperationAlreadyUsed(authorization, operationId) then
+          invalidHistory(
+            state,
+            event,
+            "capture provider operation ID reuses authorization operation ID"
+          )
         PaymentState.CapturePending(payment, authorization, operationId)
 
       case (
@@ -545,6 +551,12 @@ object PaymentDecider:
       data.capture.operationId == operationId ||
       data.refunds.exists(_.operationId == operationId)
 
+  private def providerOperationAlreadyUsed(
+      authorization: AuthorizationRecord,
+      operationId: ProviderOperationId
+  ): Boolean =
+    authorization.operationId == operationId
+
   private def completedRefundReplay(
       state: PaymentState,
       command: PaymentCommand.RefundPayment,
@@ -779,8 +791,8 @@ object PaymentDecider:
       invalidHistory(state, event, "refund request currency does not match capture currency")
     if data.refunds.exists(_.refundId == event.refundId) then
       invalidHistory(state, event, "refund request reuses completed refund ID")
-    if data.refunds.exists(_.operationId == event.operationId) then
-      invalidHistory(state, event, "refund request reuses completed provider operation ID")
+    if providerOperationAlreadyUsed(data, event.operationId) then
+      invalidHistory(state, event, "refund request reuses existing provider operation ID")
 
     val totalAfterRefund = totalRefunded(data.refunds) + event.amount.amount
     if totalAfterRefund > data.capture.amount.amount then
