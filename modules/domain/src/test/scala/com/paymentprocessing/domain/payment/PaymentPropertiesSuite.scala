@@ -283,6 +283,12 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
     }
   }
 
+  property("state-aware generated lifecycle traces preserve invariants after every step") {
+    forAll(genPaymentTrace) { case (payment, commands) =>
+      validateGeneratedTrace(payment, commands)
+    }
+  }
+
   private val genCurrency: Gen[Currency] =
     Gen.oneOf(Currency.values.toSeq)
 
@@ -324,11 +330,149 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
       createdAt <- genInstant
     yield Payment(paymentId, tenantId, customerId, merchantId, amount, token, createdAt)
 
+  private val genPaymentTrace: Gen[(Payment, List[PaymentCommand])] =
+    genPayment.flatMap(payment => genLegalTrace(payment).map(commands => (payment, commands)))
+
+  private def genLegalTrace(payment: Payment): Gen[List[PaymentCommand]] =
+    def loop(state: PaymentState, index: Int, remaining: Int): Gen[List[PaymentCommand]] =
+      if remaining <= 0 then Gen.const(Nil)
+      else
+        genNextCommand(payment, state, index).flatMap {
+          case None => Gen.const(Nil)
+          case Some(command) =>
+            val nextState = PaymentDecider.decide(state, command) match
+              case Right(events) => events.foldLeft(state)(PaymentDecider.evolve)
+              case Left(_) => state
+
+            loop(nextState, index + 1, remaining - 1).map(command :: _)
+        }
+
+    loop(PaymentState.NotCreated, index = 0, remaining = 32)
+
+  private def genNextCommand(
+      payment: Payment,
+      state: PaymentState,
+      index: Int
+  ): Gen[Option[PaymentCommand]] =
+    state match
+      case PaymentState.NotCreated =>
+        Gen.const(Some(createCommand(payment)))
+      case PaymentState.Created(_) =>
+        Gen.const(Some(PaymentCommand.StartFraudCheck(payment.createdAt)))
+      case PaymentState.FraudCheckPending(_) =>
+        Gen
+          .oneOf(
+            PaymentCommand.RecordFraudApproved(payment.createdAt),
+            PaymentCommand.RecordFraudRejected(payment.createdAt),
+            PaymentCommand.RecordFraudManualReview(payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.ManualReview(_) =>
+        Gen
+          .oneOf(
+            PaymentCommand.ApproveManualReview(payment.createdAt),
+            PaymentCommand.RejectManualReview(payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.ReadyForAuthorization(_) =>
+        Gen.const(
+          Some(PaymentCommand.AuthorizePayment(operation(s"trace-auth-$index"), payment.createdAt))
+        )
+      case PaymentState.AuthorizationPending(_, operationId) =>
+        Gen
+          .oneOf(
+            PaymentCommand.AuthorizePayment(operationId, payment.createdAt),
+            PaymentCommand.RecordAuthorizationSucceeded(operationId, payment.createdAt),
+            PaymentCommand.RecordAuthorizationDeclined(operationId, payment.createdAt),
+            PaymentCommand.RecordAuthorizationUnknown(operationId, payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.AuthorizationUnknown(_, operationId) =>
+        Gen
+          .oneOf(
+            PaymentCommand.ResolveAuthorizationUnknownAsSucceeded(operationId, payment.createdAt),
+            PaymentCommand.ResolveAuthorizationUnknownAsDeclined(operationId, payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.Authorized(_, _) =>
+        Gen.const(
+          Some(PaymentCommand.CapturePayment(operation(s"trace-capture-$index"), payment.createdAt))
+        )
+      case PaymentState.CapturePending(_, _, operationId) =>
+        Gen
+          .oneOf(
+            PaymentCommand.CapturePayment(operationId, payment.createdAt),
+            PaymentCommand.RecordCaptureSucceeded(operationId, payment.createdAt),
+            PaymentCommand.RecordCaptureFailed(operationId, payment.createdAt),
+            PaymentCommand.RecordCaptureUnknown(operationId, payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.CaptureUnknown(_, _, operationId) =>
+        Gen
+          .oneOf(
+            PaymentCommand.ResolveCaptureUnknownAsSucceeded(operationId, payment.createdAt),
+            PaymentCommand.ResolveCaptureUnknownAsFailed(operationId, payment.createdAt)
+          )
+          .map(Some(_))
+      case state: (PaymentState.Captured | PaymentState.PartiallyRefunded) =>
+        genRefundAmount(state).map(amount =>
+          Some(
+            PaymentCommand.RefundPayment(
+              refundId(index),
+              operation(s"trace-refund-$index"),
+              amount,
+              payment.createdAt
+            )
+          )
+        )
+      case PaymentState.RefundPending(_, _, _, _, pending) =>
+        Gen
+          .oneOf(
+            PaymentCommand.RefundPayment(
+              pending.refundId,
+              pending.operationId,
+              pending.amount,
+              payment.createdAt
+            ),
+            PaymentCommand.RecordRefundSucceeded(pending.operationId, payment.createdAt),
+            PaymentCommand.RecordRefundFailed(pending.operationId, payment.createdAt),
+            PaymentCommand.RecordRefundUnknown(pending.operationId, payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.RefundUnknown(_, _, _, _, pending) =>
+        Gen
+          .oneOf(
+            PaymentCommand.ResolveRefundUnknownAsSucceeded(pending.operationId, payment.createdAt),
+            PaymentCommand.ResolveRefundUnknownAsFailed(pending.operationId, payment.createdAt)
+          )
+          .map(Some(_))
+      case PaymentState.FraudRejected(_) | PaymentState.Declined(_, _) |
+          PaymentState.CaptureFailed(_, _, _) | PaymentState.RefundFailed(_, _, _, _, _) |
+          PaymentState.Refunded(_, _, _, _) =>
+        Gen.const(None)
+
   private def decimalFromMinorUnits(minorUnits: Long, currency: Currency): BigDecimal =
     BigDecimal(java.math.BigDecimal.valueOf(minorUnits, currency.minorUnitScale))
 
   private def moneyFromMinorUnits(minorUnits: Long, currency: Currency): Money =
     Money.from(decimalFromMinorUnits(minorUnits, currency), currency).toOption.get
+
+  private def genRefundAmount(
+      state: PaymentState.Captured | PaymentState.PartiallyRefunded
+  ): Gen[Money] =
+    val (capture, refunds) =
+      state match
+        case PaymentState.Captured(_, _, capture, refunds) => (capture, refunds)
+        case PaymentState.PartiallyRefunded(_, _, capture, refunds) => (capture, refunds)
+
+    val refunded = refunds.map(_.amount.amount).sum
+    val remaining = capture.amount.amount - refunded
+    val oneMinor = decimalFromMinorUnits(1L, capture.amount.currency)
+    val smallest = Money.from(oneMinor.min(remaining), capture.amount.currency).toOption.get
+    val full = Money.from(remaining, capture.amount.currency).toOption.get
+
+    if smallest == full then Gen.const(full)
+    else Gen.oneOf(smallest, full)
 
   private def incrementByMinorUnit(money: Money): Money =
     Money
@@ -436,6 +580,146 @@ final class PaymentPropertiesSuite extends ScalaCheckSuite:
       val _ = PaymentDecider.evolve(state, event)
       false
     catch case _: InvalidPaymentHistory => true
+
+  private def validateGeneratedTrace(payment: Payment, commands: List[PaymentCommand]): Boolean =
+    final case class TraceCheck(
+        state: PaymentState,
+        fraudRejectedSeen: Boolean,
+        declinedSeen: Boolean,
+        valid: Boolean
+    )
+
+    val result = commands.foldLeft(TraceCheck(PaymentState.NotCreated, false, false, true)) {
+      case (check, command) if check.valid =>
+        PaymentDecider.decide(check.state, command) match
+          case Right(events) =>
+            val after = events.foldLeft(check.state)(PaymentDecider.evolve)
+            val fraudRejectedSeen =
+              check.fraudRejectedSeen || check.state.isInstanceOf[PaymentState.FraudRejected] ||
+                after.isInstanceOf[PaymentState.FraudRejected]
+            val declinedSeen =
+              check.declinedSeen || check.state.isInstanceOf[PaymentState.Declined] ||
+                after.isInstanceOf[PaymentState.Declined]
+
+            TraceCheck(
+              after,
+              fraudRejectedSeen,
+              declinedSeen,
+              stateInvariantsHold(payment, after) &&
+                !(fraudRejectedSeen && isAuthorizedOrLater(after)) &&
+                !(declinedSeen && isCapturedOrLater(after))
+            )
+          case Left(_) =>
+            check.copy(valid = false)
+      case (check, _) => check
+    }
+
+    result.valid
+
+  private def stateInvariantsHold(payment: Payment, state: PaymentState): Boolean =
+    paymentInState(state).forall(_ == payment) &&
+      totalRefunded(state) <= capturedAmount(state) &&
+      completedRefundIds(state).distinct.size == completedRefundIds(state).size &&
+      providerOperationIds(state).distinct.size == providerOperationIds(state).size &&
+      unknownStateRejectsFreshMutation(state, payment)
+
+  private def paymentInState(state: PaymentState): Option[Payment] =
+    state match
+      case PaymentState.NotCreated => None
+      case _ => Some(extractPayment(state))
+
+  private def completedRefundIds(state: PaymentState): List[RefundId] =
+    completedRefunds(state).map(_.refundId)
+
+  private def providerOperationIds(state: PaymentState): List[ProviderOperationId] =
+    state match
+      case PaymentState.AuthorizationPending(_, operationId) => List(operationId)
+      case PaymentState.Authorized(_, authorization) => List(authorization.operationId)
+      case PaymentState.Declined(_, authorization) => List(authorization.operationId)
+      case PaymentState.AuthorizationUnknown(_, operationId) => List(operationId)
+      case PaymentState.CapturePending(_, authorization, operationId) =>
+        List(authorization.operationId, operationId)
+      case PaymentState.CaptureFailed(_, authorization, operationId) =>
+        List(authorization.operationId, operationId)
+      case PaymentState.CaptureUnknown(_, authorization, operationId) =>
+        List(authorization.operationId, operationId)
+      case PaymentState.Captured(_, authorization, capture, refunds) =>
+        authorization.operationId :: capture.operationId :: refunds.map(_.operationId)
+      case PaymentState.RefundPending(_, authorization, capture, refunds, pending) =>
+        authorization.operationId :: capture.operationId :: pending.operationId :: refunds.map(
+          _.operationId
+        )
+      case PaymentState.PartiallyRefunded(_, authorization, capture, refunds) =>
+        authorization.operationId :: capture.operationId :: refunds.map(_.operationId)
+      case PaymentState.RefundFailed(_, authorization, capture, refunds, failed) =>
+        authorization.operationId :: capture.operationId :: failed.operationId :: refunds.map(
+          _.operationId
+        )
+      case PaymentState.RefundUnknown(_, authorization, capture, refunds, unknown) =>
+        authorization.operationId :: capture.operationId :: unknown.operationId :: refunds.map(
+          _.operationId
+        )
+      case PaymentState.Refunded(_, authorization, capture, refunds) =>
+        authorization.operationId :: capture.operationId :: refunds.map(_.operationId)
+      case _ => Nil
+
+  private def completedRefunds(state: PaymentState): List[RefundRecord] =
+    state match
+      case PaymentState.Captured(_, _, _, refunds) => refunds
+      case PaymentState.PartiallyRefunded(_, _, _, refunds) => refunds
+      case PaymentState.Refunded(_, _, _, refunds) => refunds
+      case PaymentState.RefundPending(_, _, _, refunds, _) => refunds
+      case PaymentState.RefundUnknown(_, _, _, refunds, _) => refunds
+      case PaymentState.RefundFailed(_, _, _, refunds, _) => refunds
+      case _ => Nil
+
+  private def unknownStateRejectsFreshMutation(state: PaymentState, payment: Payment): Boolean =
+    state match
+      case PaymentState.AuthorizationUnknown(_, _) =>
+        PaymentDecider
+          .decide(
+            state,
+            PaymentCommand.AuthorizePayment(operation("trace-fresh-auth"), payment.createdAt)
+          )
+          .isLeft
+      case PaymentState.CaptureUnknown(_, _, _) =>
+        PaymentDecider
+          .decide(
+            state,
+            PaymentCommand.CapturePayment(operation("trace-fresh-capture"), payment.createdAt)
+          )
+          .isLeft
+      case PaymentState.RefundUnknown(_, _, _, _, _) =>
+        PaymentDecider
+          .decide(
+            state,
+            PaymentCommand.RefundPayment(
+              refundId(9000),
+              operation("trace-fresh-refund"),
+              payment.amount,
+              payment.createdAt
+            )
+          )
+          .isLeft
+      case _ => true
+
+  private def isAuthorizedOrLater(state: PaymentState): Boolean =
+    state match
+      case PaymentState.Authorized(_, _) | PaymentState.CapturePending(_, _, _) |
+          PaymentState.CaptureFailed(_, _, _) | PaymentState.CaptureUnknown(_, _, _) |
+          PaymentState.Captured(_, _, _, _) | PaymentState.RefundPending(_, _, _, _, _) |
+          PaymentState.PartiallyRefunded(_, _, _, _) | PaymentState.RefundFailed(_, _, _, _, _) |
+          PaymentState.RefundUnknown(_, _, _, _, _) | PaymentState.Refunded(_, _, _, _) =>
+        true
+      case _ => false
+
+  private def isCapturedOrLater(state: PaymentState): Boolean =
+    state match
+      case PaymentState.Captured(_, _, _, _) | PaymentState.RefundPending(_, _, _, _, _) |
+          PaymentState.PartiallyRefunded(_, _, _, _) | PaymentState.RefundFailed(_, _, _, _, _) |
+          PaymentState.RefundUnknown(_, _, _, _, _) | PaymentState.Refunded(_, _, _, _) =>
+        true
+      case _ => false
 
   private def isNotExternalMutationIntent(event: PaymentEvent): Boolean =
     event match

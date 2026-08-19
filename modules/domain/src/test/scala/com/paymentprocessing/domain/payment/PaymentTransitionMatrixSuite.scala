@@ -20,30 +20,7 @@ final class PaymentTransitionMatrixSuite extends FunSuite:
   test("transition matrix has explicit fixture coverage for every state") {
     val stateNames = allStates.map(_.productPrefix).toSet
 
-    assertEquals(
-      stateNames,
-      Set(
-        "NotCreated",
-        "Created",
-        "FraudCheckPending",
-        "FraudRejected",
-        "ManualReview",
-        "ReadyForAuthorization",
-        "AuthorizationPending",
-        "Authorized",
-        "Declined",
-        "AuthorizationUnknown",
-        "CapturePending",
-        "CaptureFailed",
-        "CaptureUnknown",
-        "Captured",
-        "RefundPending",
-        "PartiallyRefunded",
-        "RefundFailed",
-        "RefundUnknown",
-        "Refunded"
-      )
-    )
+    assertEquals(stateNames, PaymentTransitionMatrixSuite.fixtureStateLabels)
   }
 
   test("illegal lifecycle transitions return exact typed errors") {
@@ -145,6 +122,17 @@ final class PaymentTransitionMatrixSuite extends FunSuite:
     cases.foreach { case (state, command, expectedError) =>
       assertEquals(PaymentDecider.decide(state, command), Left(expectedError))
     }
+  }
+
+  test("decision command coverage catalog is synchronized with the command ADT") {
+    assertEquals(
+      PaymentTransitionMatrixSuite.decisionCommandLabels,
+      PaymentAdtInventory.commandLabels
+    )
+  }
+
+  test("replay event coverage catalog is synchronized with the event ADT") {
+    assertEquals(PaymentTransitionMatrixSuite.replayEventLabels, PaymentAdtInventory.eventLabels)
   }
 
   test("wrong provider operation result is rejected in every pending or unknown state") {
@@ -398,3 +386,80 @@ final class PaymentTransitionMatrixSuite extends FunSuite:
 
   private def money(value: String): Money =
     Money.from(BigDecimal(value), Currency.PLN).fold(error => fail(error.toString), identity)
+
+object PaymentTransitionMatrixSuite:
+  val fixtureStateLabels: Set[String] =
+    Set(
+      "NotCreated",
+      "Created",
+      "FraudCheckPending",
+      "FraudRejected",
+      "ManualReview",
+      "ReadyForAuthorization",
+      "AuthorizationPending",
+      "Authorized",
+      "Declined",
+      "AuthorizationUnknown",
+      "CapturePending",
+      "CaptureFailed",
+      "CaptureUnknown",
+      "Captured",
+      "RefundPending",
+      "PartiallyRefunded",
+      "RefundFailed",
+      "RefundUnknown",
+      "Refunded"
+    )
+
+  val decisionCommandLabels: Set[String] =
+    Set(
+      "CreatePayment",
+      "StartFraudCheck",
+      "RecordFraudApproved",
+      "RecordFraudRejected",
+      "RecordFraudManualReview",
+      "ApproveManualReview",
+      "RejectManualReview",
+      "AuthorizePayment",
+      "RecordAuthorizationSucceeded",
+      "RecordAuthorizationDeclined",
+      "RecordAuthorizationUnknown",
+      "ResolveAuthorizationUnknownAsSucceeded",
+      "ResolveAuthorizationUnknownAsDeclined",
+      "CapturePayment",
+      "RecordCaptureSucceeded",
+      "RecordCaptureFailed",
+      "RecordCaptureUnknown",
+      "ResolveCaptureUnknownAsSucceeded",
+      "ResolveCaptureUnknownAsFailed",
+      "RefundPayment",
+      "RecordRefundSucceeded",
+      "RecordRefundFailed",
+      "RecordRefundUnknown",
+      "ResolveRefundUnknownAsSucceeded",
+      "ResolveRefundUnknownAsFailed"
+    )
+
+  val replayEventLabels: Set[String] =
+    Set(
+      "PaymentCreated",
+      "FraudCheckRequested",
+      "FraudCheckPassed",
+      "FraudCheckRejected",
+      "FraudManualReviewRequired",
+      "FraudManualReviewApproved",
+      "FraudManualReviewRejected",
+      "AuthorizationRequested",
+      "PaymentAuthorized",
+      "PaymentDeclined",
+      "AuthorizationOutcomeUnknown",
+      "CaptureRequested",
+      "PaymentCaptured",
+      "CaptureFailed",
+      "CaptureOutcomeUnknown",
+      "RefundRequested",
+      "PaymentPartiallyRefunded",
+      "PaymentRefunded",
+      "RefundFailed",
+      "RefundOutcomeUnknown"
+    )

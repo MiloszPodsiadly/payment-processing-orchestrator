@@ -337,6 +337,48 @@ final class PaymentHardeningSuite extends FunSuite:
     )
   }
 
+  test("provider operation IDs cannot be reused across logical mutation families") {
+    assertEquals(
+      PaymentDecider.decide(
+        authorizedState,
+        PaymentCommand.CapturePayment(operation("auth-1"), now)
+      ),
+      Left(PaymentError.ProviderOperationAlreadyUsed(operation("auth-1")))
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        authorizedState,
+        PaymentCommand.CapturePayment(operation("capture-unique"), now)
+      ),
+      Right(List(PaymentEvent.CaptureRequested(operation("capture-unique"), now)))
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        capturedState,
+        PaymentCommand.RefundPayment(refundId(1), operation("auth-1"), money("10.00"), now)
+      ),
+      Left(PaymentError.ProviderOperationAlreadyUsed(operation("auth-1")))
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        capturedState,
+        PaymentCommand.RefundPayment(refundId(1), operation("capture-1"), money("10.00"), now)
+      ),
+      Left(PaymentError.ProviderOperationAlreadyUsed(operation("capture-1")))
+    )
+    assertEquals(
+      PaymentDecider.decide(
+        capturedState,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-unique"), money("10.00"), now)
+      ),
+      Right(
+        List(
+          PaymentEvent.RefundRequested(refundId(1), operation("refund-unique"), money("10.00"), now)
+        )
+      )
+    )
+  }
+
   test("refund replay validates pending identity, amount, currency, bounds, and event kind") {
     val pending =
       PaymentDecider.evolve(
@@ -460,8 +502,9 @@ final class PaymentHardeningSuite extends FunSuite:
     )
   }
 
-  test("payment diagnostics redact payment method token") {
+  test("domain protocol diagnostics redact payment method token") {
     val rawToken = "tok_NO_MERCY_DO_NOT_LOG_123"
+    val token = PaymentMethodToken.from(rawToken).fold(error => fail(error.toString), identity)
     val sensitivePayment =
       Payment(
         PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000501")),
@@ -469,12 +512,36 @@ final class PaymentHardeningSuite extends FunSuite:
         CustomerId.from(UUID.fromString("00000000-0000-0000-0000-000000000503")),
         MerchantId.from(UUID.fromString("00000000-0000-0000-0000-000000000504")),
         money("100.00"),
-        PaymentMethodToken.from(rawToken).fold(error => fail(error.toString), identity),
+        token,
+        now
+      )
+    val createCommand: PaymentCommand.CreatePayment =
+      PaymentCommand.CreatePayment(
+        sensitivePayment.paymentId,
+        sensitivePayment.tenantId,
+        sensitivePayment.customerId,
+        sensitivePayment.merchantId,
+        sensitivePayment.amount,
+        token,
+        now
+      )
+    val createdEvent: PaymentEvent.PaymentCreated =
+      PaymentEvent.PaymentCreated(
+        sensitivePayment.paymentId,
+        sensitivePayment.tenantId,
+        sensitivePayment.customerId,
+        sensitivePayment.merchantId,
+        sensitivePayment.amount,
+        token,
         now
       )
 
     assert(!sensitivePayment.toString.contains(rawToken))
     assert(sensitivePayment.toString.contains("[REDACTED]"))
+    assert(!createCommand.toString.contains(rawToken))
+    assert(!createdEvent.toString.contains(rawToken))
+    assertEquals(createCommand.paymentMethodToken.value, rawToken)
+    assertEquals(createdEvent.paymentMethodToken.value, rawToken)
 
     val exception = intercept[InvalidPaymentHistory] {
       PaymentDecider.evolve(
@@ -484,6 +551,7 @@ final class PaymentHardeningSuite extends FunSuite:
     }
 
     assert(!exception.getMessage.contains(rawToken))
+    assert(!exception.toString.contains(rawToken))
     assert(exception.getMessage.contains("Created"))
     assert(exception.getMessage.contains("PaymentCaptured"))
   }
