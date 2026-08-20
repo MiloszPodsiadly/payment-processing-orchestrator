@@ -1,3 +1,4 @@
+import sbt.ModuleID
 import sbt.librarymanagement.UpdateReport
 
 object ArchitecturePolicy {
@@ -18,6 +19,14 @@ object ArchitecturePolicy {
       .map(module => DependencyCoordinate(module.module.organization, module.module.name))
       .toSet
 
+  def directProductionDependencyCoordinates(
+      dependencies: Seq[ModuleID]
+  ): Set[DependencyCoordinate] =
+    dependencies
+      .filterNot(dependency => dependency.configurations.exists(isTestConfiguration))
+      .map(dependency => DependencyCoordinate(dependency.organization, dependency.name))
+      .toSet
+
   def unapprovedDependencyViolations(
       module: String,
       actual: Set[DependencyCoordinate],
@@ -28,6 +37,19 @@ object ArchitecturePolicy {
       .toSeq
       .sortBy(_.toString)
       .map(dependency => s"$module compile dependency requires architecture approval: $dependency")
+
+  def unapprovedDirectDependencyViolations(
+      module: String,
+      actual: Set[DependencyCoordinate],
+      approved: Set[DependencyCoordinate]
+  ): Seq[String] =
+    actual
+      .diff(approved)
+      .toSeq
+      .sortBy(_.toString)
+      .map(dependency =>
+        s"$module direct production dependency requires architecture approval: $dependency"
+      )
 
   def verifyFixtures(approved: Set[DependencyCoordinate]): Unit = {
     val unexpectedDependency = DependencyCoordinate("com.example", "new-http-client")
@@ -44,4 +66,30 @@ object ArchitecturePolicy {
       )
     }
   }
+
+  def verifyRuntimeDirectFixtures(approved: Set[DependencyCoordinate]): Unit = {
+    val unexpectedDependency = DependencyCoordinate("com.example", "random-http-client")
+    val fixtureViolations =
+      unapprovedDirectDependencyViolations(
+        "runtime-pekko",
+        approved + unexpectedDependency,
+        approved
+      )
+
+    if (
+      fixtureViolations != Seq(
+        "runtime-pekko direct production dependency requires architecture approval: com.example:random-http-client"
+      )
+    ) {
+      sys.error(
+        "Runtime architecture dependency allowlist fixture did not fail for an unapproved direct production dependency"
+      )
+    }
+  }
+
+  private def isTestConfiguration(configurations: String): Boolean =
+    configurations
+      .split(";")
+      .map(_.trim.toLowerCase)
+      .contains("test")
 }

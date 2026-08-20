@@ -163,7 +163,15 @@ ThisBuild / verifyArchitecture := Def.uncached {
     infrastructureNeutralCompileDependencies +
       DependencyCoordinate(organization.value, s"payment-domain_${scalaBinaryVersion.value}")
 
+  val approvedRuntimePekkoDirectProductionDependencies =
+    Set(
+      DependencyCoordinate("org.apache.pekko", "pekko-actor-typed"),
+      DependencyCoordinate("org.apache.pekko", "pekko-persistence-typed"),
+      DependencyCoordinate("org.scala-lang", "scala3-library")
+    )
+
   verifyFixtures(approvedDomainCompileDependencies)
+  verifyRuntimeDirectFixtures(approvedRuntimePekkoDirectProductionDependencies)
 
   val approvalViolations =
     unapprovedDependencyViolations(
@@ -174,6 +182,10 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "application",
       compileDependencyCoordinates((application / update).value),
       approvedApplicationCompileDependencies
+    ) ++ unapprovedDirectDependencyViolations(
+      "runtime-pekko",
+      directProductionDependencyCoordinates((runtimePekko / libraryDependencies).value),
+      approvedRuntimePekkoDirectProductionDependencies
     )
 
   if approvalViolations.nonEmpty then sys.error(approvalViolations.mkString(System.lineSeparator()))
