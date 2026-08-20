@@ -56,9 +56,18 @@ and Refunded states where those histories are legal.
 ## Serialization
 
 Phase 3 binds `PaymentEvent` to an explicit runtime serializer in `runtime-pekko`.
-Persistence TestKit runs with event serialization enabled. The test suite round-trips
-every current concrete `PaymentEvent` case through Pekko serialization and then through
-persistence recovery.
+The production default binding lives in `modules/runtime-pekko/src/main/resources/reference.conf`,
+not in test resources. Persistence TestKit runs with event serialization enabled and
+inherits that runtime default while using test-only journal and snapshot-store overrides.
+
+The serializer uses explicit current-version binary encoding. Persisted strings use
+length-prefixed UTF-8 rather than Java `writeUTF`, so legal domain values are not capped
+by a hidden 65,535-byte serializer limit.
+
+The test suite round-trips every current concrete `PaymentEvent` case through Pekko
+serialization and then through persistence recovery. Runtime serializer fixtures are
+checked against the compiler-derived Scala 3 `PaymentEvent` ADT case inventory, so adding
+a new event without a serializer fixture makes the runtime test gate fail.
 
 This proves current-version serialization correctness only. It does not claim
 backward-compatible persisted event schema evolution, rolling upgrades, or upcaster support.

@@ -50,7 +50,7 @@ payment domain, and the Phase 3 Apache Pekko Typed event-sourced payment entity.
 - Accepted mutation replies are emitted only after persistence; domain rejections and duplicate-safe `Right(Nil)` decisions persist zero events.
 - The entity uses deterministic `PersistenceId` values in the form `payment|<payment-id>`.
 - Runtime envelope and recovery checks bind one entity/journal to one `PaymentId`; cross-payment creation contamination fails loudly.
-- Phase 3 tests prove current-version `PaymentEvent` serialization round trips and run Persistence TestKit with event serialization enabled.
+- Phase 3 tests prove current-version `PaymentEvent` serialization round trips, inherit the runtime-owned serializer binding from `runtime-pekko` `reference.conf`, and run Persistence TestKit with event serialization enabled.
 - Recovery tests cover Created, Pending, Authorized/Captured/Refunded, Unknown, partial refund, corrupt history, journal write failure, and mailbox serialization scenarios.
 - Local Cassandra infrastructure is defined in `compose.yaml`.
 - CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
@@ -146,7 +146,7 @@ the sbt/BSP model as described in [Local Development](documents/local-developmen
 
 - `modules/domain`: pure domain model in Phase 2; no framework dependencies.
 - `modules/application`: use-case coordination and ports.
-- `modules/runtime-pekko`: typed `PaymentEntity`, event-sourced behavior, current-version event serialization, and Phase 3 recovery tests.
+- `modules/runtime-pekko`: typed `PaymentEntity`, event-sourced behavior, runtime-owned current-version event serialization, and Phase 3 recovery tests.
 - `modules/adapter-http-tapir`: HTTP API adapter when introduced.
 - `modules/adapter-cassandra`: Cassandra adapter when introduced.
 - `modules/adapter-provider`: payment provider adapter when introduced.
