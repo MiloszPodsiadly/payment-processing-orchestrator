@@ -46,7 +46,8 @@ lazy val runtimePekko = project
   .settings(commonSettings)
   .settings(
     name := "payment-runtime-pekko",
-    libraryDependencies ++= pekkoRuntimeDependencies.map(_ % Test)
+    libraryDependencies ++= pekkoRuntimeDependencies,
+    libraryDependencies ++= pekkoRuntimeTestDependencies
   )
 
 lazy val adapterHttpTapir = project
@@ -162,7 +163,15 @@ ThisBuild / verifyArchitecture := Def.uncached {
     infrastructureNeutralCompileDependencies +
       DependencyCoordinate(organization.value, s"payment-domain_${scalaBinaryVersion.value}")
 
+  val approvedRuntimePekkoDirectProductionDependencies =
+    Set(
+      DependencyCoordinate("org.apache.pekko", "pekko-actor-typed"),
+      DependencyCoordinate("org.apache.pekko", "pekko-persistence-typed"),
+      DependencyCoordinate("org.scala-lang", "scala3-library")
+    )
+
   verifyFixtures(approvedDomainCompileDependencies)
+  verifyRuntimeDirectFixtures(approvedRuntimePekkoDirectProductionDependencies)
 
   val approvalViolations =
     unapprovedDependencyViolations(
@@ -173,6 +182,10 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "application",
       compileDependencyCoordinates((application / update).value),
       approvedApplicationCompileDependencies
+    ) ++ unapprovedDirectDependencyViolations(
+      "runtime-pekko",
+      directProductionDependencyCoordinates((runtimePekko / libraryDependencies).value),
+      approvedRuntimePekkoDirectProductionDependencies
     )
 
   if approvalViolations.nonEmpty then sys.error(approvalViolations.mkString(System.lineSeparator()))
@@ -197,6 +210,14 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "/com/auth0/",
       "/io/grpc/",
       "/com/squareup/okhttp/"
+    ),
+    "runtime-pekko" -> Seq(
+      "/sttp/tapir/",
+      "/com/datastax/",
+      "/io/jsonwebtoken/",
+      "/com/auth0/",
+      "/org/apache/pekko/pekko-cluster-sharding",
+      "/org/apache/pekko/pekko-projection"
     )
   )
 
@@ -209,6 +230,10 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "application",
       (application / Compile / externalDependencyClasspath).value,
       forbiddenCompileDependencyMarkers("application")
+    ) ++ forbiddenDependencyViolations(
+      "runtime-pekko",
+      (runtimePekko / Compile / externalDependencyClasspath).value,
+      forbiddenCompileDependencyMarkers("runtime-pekko")
     )
 
   if dependencyViolations.nonEmpty then

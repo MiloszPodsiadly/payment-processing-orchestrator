@@ -30,7 +30,14 @@ object Dependencies {
 
   val pekkoRuntimeDependencies: Seq[ModuleID] =
     Seq(
-      "org.apache.pekko" %% "pekko-actor-testkit-typed" % Versions.pekkoVersion
+      "org.apache.pekko" %% "pekko-actor-typed" % Versions.pekkoVersion,
+      "org.apache.pekko" %% "pekko-persistence-typed" % Versions.pekkoVersion
+    )
+
+  val pekkoRuntimeTestDependencies: Seq[ModuleID] =
+    Seq(
+      "org.apache.pekko" %% "pekko-actor-testkit-typed" % Versions.pekkoVersion % Test,
+      "org.apache.pekko" %% "pekko-persistence-testkit" % Versions.pekkoVersion % Test
     )
 
   val integrationTestDependencies: Seq[ModuleID] =

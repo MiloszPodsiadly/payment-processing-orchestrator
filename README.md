@@ -7,9 +7,10 @@ duplicate delivery, provider timeouts, crashes, authorization boundaries, and te
 
 ## Current Phase
 
-PHASE 2 - Pure Payment Domain
+PHASE 3 - Pekko Payment Entity
 
-This repository currently contains the Phase 1 technical foundation and the pure Phase 2 payment domain. Runtime integration is planned but not implemented yet.
+This repository currently contains the Phase 1 technical foundation, the pure Phase 2
+payment domain, and the Phase 3 Apache Pekko Typed event-sourced payment entity.
 
 ## Core Direction
 
@@ -32,6 +33,7 @@ This repository currently contains the Phase 1 technical foundation and the pure
 - Scalafix plus compiler warnings for static checks
 - Typesafe Config for typed startup configuration loading
 - Docker Compose with local Cassandra 5.0.8
+- Apache Pekko Typed and Pekko Persistence Typed in `runtime-pekko`
 
 ## Implemented In This Phase
 
@@ -43,6 +45,13 @@ This repository currently contains the Phase 1 technical foundation and the pure
 - Configuration tests validate explicit runtime environment, typed provider mode, mandatory fields, invalid values, and unsupported production runtime.
 - Pure domain identifiers, Money, Currency, Payment core data, state, commands, events, errors, `decide`, and `evolve` exist in `modules/domain`.
 - Domain rules cover fraud, authorization, capture, refund, duplicate-safe replay, completed refund idempotency, stale provider results, aggregate-wide provider operation uniqueness, provider operation correlation, unknown outcome states, replay integrity, full protocol token diagnostic redaction, and refund bounds.
+- `runtime-pekko` contains a typed `PaymentEntity` implemented with `EventSourcedBehavior.withEnforcedReplies`.
+- `PaymentEntity` uses `PaymentDecider.decide` as the only command authority and `PaymentDecider.evolve` as the only business event transition authority.
+- Accepted mutation replies are emitted only after persistence; domain rejections and duplicate-safe `Right(Nil)` decisions persist zero events.
+- The entity uses deterministic `PersistenceId` values in the form `payment|<payment-id>`.
+- Runtime envelope and recovery checks bind one entity/journal to one `PaymentId`; cross-payment creation contamination fails loudly.
+- Phase 3 tests prove current-version `PaymentEvent` serialization round trips, inherit the runtime-owned serializer binding from `runtime-pekko` `reference.conf`, and run Persistence TestKit with event serialization enabled.
+- Recovery tests cover Created, Pending, Authorized/Captured/Refunded, Unknown, partial refund, corrupt history, journal write failure, and mailbox serialization scenarios.
 - Local Cassandra infrastructure is defined in `compose.yaml`.
 - CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
 - Direct GitHub Actions are pinned to immutable commit SHAs.
@@ -54,16 +63,20 @@ This repository currently contains the Phase 1 technical foundation and the pure
 - `docker compose up -d cassandra` starts Cassandra and the container reaches `healthy`.
 - Windows and macOS/Linux environment wrapper scripts create `.env` from `.env.example` when missing and load it only for the child process they run.
 - Static boundary search, expected directory checks, approved compile dependency checks, known-forbidden dependency checks, and project graph checks are exposed through `verifyArchitecture`.
-- Domain unit, property-based, hardening, corrupted-history, ADT inventory, state-aware trace, and transition-matrix tests run through `sbt testFull`.
+- Domain unit, property-based, hardening, corrupted-history, ADT inventory, state-aware trace, transition-matrix, and Phase 3 runtime persistence tests run through `sbt testFull`.
 
 ## What Does Not Exist Yet
 
-- Pekko payment entity
 - Cassandra journal integration
 - Tapir payment API
 - JWT and RBAC implementation
 - Fraud or provider integrations
 - API/provider idempotency behavior
+- Cluster Sharding or distributed single-writer enforcement
+- Pekko Projections
+- Snapshots
+- Provider side effects and reconciliation workers
+- Production event schema migration/upcasters
 - Production-ready runtime
 
 ## Prerequisites
@@ -133,7 +146,7 @@ the sbt/BSP model as described in [Local Development](documents/local-developmen
 
 - `modules/domain`: pure domain model in Phase 2; no framework dependencies.
 - `modules/application`: use-case coordination and ports.
-- `modules/runtime-pekko`: typed actor and persistence runtime when introduced.
+- `modules/runtime-pekko`: typed `PaymentEntity`, event-sourced behavior, runtime-owned current-version event serialization, and Phase 3 recovery tests.
 - `modules/adapter-http-tapir`: HTTP API adapter when introduced.
 - `modules/adapter-cassandra`: Cassandra adapter when introduced.
 - `modules/adapter-provider`: payment provider adapter when introduced.
