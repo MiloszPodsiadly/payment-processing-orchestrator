@@ -49,7 +49,7 @@ object PaymentEntity:
       persistenceId = pekkoPersistenceId(paymentId),
       emptyState = PaymentState.NotCreated,
       commandHandler = commandHandler(paymentId),
-      eventHandler = PaymentDecider.evolve
+      eventHandler = eventHandler(paymentId)
     )
 
   def persistenceId(paymentId: PaymentId): String =
@@ -86,3 +86,35 @@ object PaymentEntity:
         Some(InvalidEnvelopeReason.PaymentIdMismatch(paymentId, create.paymentId))
       case _ =>
         None
+
+  private def eventHandler(
+      entityPaymentId: PaymentId
+  )(state: PaymentState, event: PaymentEvent): PaymentState =
+    validatePersistedEntityIdentity(entityPaymentId, state, event)
+    PaymentDecider.evolve(state, event)
+
+  private def validatePersistedEntityIdentity(
+      entityPaymentId: PaymentId,
+      state: PaymentState,
+      event: PaymentEvent
+  ): Unit =
+    (state, event) match
+      case (PaymentState.NotCreated, created: PaymentEvent.PaymentCreated)
+          if created.paymentId != entityPaymentId =>
+        throw InvalidPaymentEntityHistory(
+          expected = entityPaymentId,
+          actual = created.paymentId,
+          eventKind = created.productPrefix,
+          reason = "PaymentCreated paymentId does not match PaymentEntity identity"
+        )
+      case _ =>
+        ()
+
+final case class InvalidPaymentEntityHistory(
+    expected: PaymentId,
+    actual: PaymentId,
+    eventKind: String,
+    reason: String
+) extends IllegalStateException(
+      s"Invalid payment entity history: expectedPaymentId=${expected.value}, actualPaymentId=${actual.value}, event=$eventKind, reason=$reason"
+    )
