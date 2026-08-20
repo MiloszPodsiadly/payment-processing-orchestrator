@@ -111,6 +111,16 @@ private object ModuleBoundaryRules:
           ForbiddenSourceToken("Pekko Actor Runtime", "org.apache.pekko.actor"),
           ForbiddenSourceToken("Pekko Persistence", "org.apache.pekko.persistence")
         )
+      ),
+      SourceBoundaryRule(
+        moduleName = "runtime-pekko",
+        relativePath = Path.of("modules/runtime-pekko"),
+        forbiddenTokens = Seq(
+          ForbiddenSourceToken("Tapir", "sttp.tapir"),
+          ForbiddenSourceToken("Cassandra", "com.datastax"),
+          ForbiddenSourceToken("Pekko Cluster Sharding", "org.apache.pekko.cluster.sharding"),
+          ForbiddenSourceToken("Pekko Projection", "org.apache.pekko.projection")
+        )
       )
     )
 
