@@ -24,10 +24,17 @@ import org.apache.pekko.persistence.testkit.scaladsl.PersistenceTestKit
 import org.apache.pekko.serialization.SerializationExtension
 import org.apache.pekko.serialization.SerializerWithStringManifest
 
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.io.NotSerializableException
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
+import scala.compiletime.constValue
+import scala.compiletime.erasedValue
 import scala.compiletime.uninitialized
 import scala.concurrent.duration.DurationInt
+import scala.deriving.Mirror
 
 final class PaymentEntitySuite extends FunSuite:
   private val now = Instant.parse("2026-01-01T00:00:00Z")
@@ -60,26 +67,38 @@ final class PaymentEntitySuite extends FunSuite:
     assertEquals(recoveredReply.state, PaymentState.Created(payment))
   }
 
-  test("PaymentEvent serialization binding round-trips every concrete event") {
-    val serialization = SerializationExtension(actorTestKit.system)
+  test("PaymentEvent serializer contract is inherited from runtime reference.conf") {
+    val testApplicationConf = testApplicationConfText
 
-    samplePaymentEvents.foreach { event =>
-      val serializer = serialization.findSerializerFor(event)
+    assert(!testApplicationConf.contains("PaymentEventSerializer"))
+    assert(!testApplicationConf.contains("serialization-bindings"))
+    assert(!testApplicationConf.contains("allow-java-serialization"))
 
-      assertEquals(serializer.getClass, classOf[PaymentEventSerializer])
+    val config = actorTestKit.system.settings.config
 
-      val serializerWithManifest = serializer match
-        case serializerWithManifest: SerializerWithStringManifest =>
-          serializerWithManifest
-        case other =>
-          fail(s"Expected SerializerWithStringManifest, got ${other.getClass.getName}")
-      val manifest = serializerWithManifest.manifest(event)
-      val bytes = serializer.toBinary(event)
-      val reconstructed =
-        serializerWithManifest.fromBinary(bytes, manifest).asInstanceOf[PaymentEvent]
+    assertEquals(
+      config.getString("pekko.actor.serializers.payment-event"),
+      classOf[PaymentEventSerializer].getName
+    )
+    assertEquals(
+      config.getString(
+        "pekko.actor.serialization-bindings.\"com.paymentprocessing.domain.payment.PaymentEvent\""
+      ),
+      "payment-event"
+    )
+    assert(!config.getBoolean("pekko.actor.allow-java-serialization"))
+    assertEquals(
+      SerializationExtension(actorTestKit.system).findSerializerFor(createdEvent(payment)).getClass,
+      classOf[PaymentEventSerializer]
+    )
+  }
 
-      assertEquals(reconstructed, event)
-    }
+  test("PaymentEvent serializer fixtures cover every concrete PaymentEvent case") {
+    val compilerDerivedLabels = paymentEventCaseLabels
+    val fixtureLabels = samplePaymentEvents.map(_.productPrefix).toSet
+
+    assertEquals(compilerDerivedLabels, fixtureLabels)
+    assertEquals(samplePaymentEvents.size, fixtureLabels.size)
   }
 
   test("PaymentEvent serialization does not fall back to Java serialization") {
@@ -90,6 +109,91 @@ final class PaymentEntitySuite extends FunSuite:
 
     assertEquals(serializer.getClass, classOf[PaymentEventSerializer])
     assertNotEquals(serializer.getClass.getName, "org.apache.pekko.serialization.JavaSerializer")
+  }
+
+  test("PaymentEvent serialization binding round-trips every concrete event") {
+    samplePaymentEvents.foreach { event =>
+      assertEquals(roundTripPaymentEvent(event), event)
+    }
+  }
+
+  test("PaymentEventSerializer round-trips legal strings beyond writeUTF size") {
+    val longProviderOperationId = operation("op_" + ("a" * 70000))
+    val longPaymentMethodToken =
+      PaymentMethodToken.from("tok_" + ("b" * 70000)).fold(error => fail(error.toString), identity)
+    val longTokenPayment =
+      Payment(
+        payment.paymentId,
+        payment.tenantId,
+        payment.customerId,
+        payment.merchantId,
+        payment.amount,
+        longPaymentMethodToken,
+        payment.createdAt
+      )
+    val providerEvent = PaymentEvent.PaymentCaptured(longProviderOperationId, now)
+    val createdWithLongToken = createdEvent(longTokenPayment)
+
+    assertEquals(roundTripPaymentEvent(providerEvent), providerEvent)
+    assertEquals(roundTripPaymentEvent(createdWithLongToken), createdWithLongToken)
+  }
+
+  test("PaymentEventSerializer round-trips non-ASCII UTF-8 strings") {
+    val unicodeOperation = operation("op-zolc-测试-مرحبا")
+    val unicodeToken =
+      PaymentMethodToken
+        .from("tok-zolc-测试-مرحبا")
+        .fold(error => fail(error.toString), identity)
+    val unicodePayment =
+      Payment(
+        payment.paymentId,
+        payment.tenantId,
+        payment.customerId,
+        payment.merchantId,
+        payment.amount,
+        unicodeToken,
+        payment.createdAt
+      )
+
+    val providerEvent = PaymentEvent.AuthorizationRequested(unicodeOperation, now)
+    val createdWithUnicodeToken = createdEvent(unicodePayment)
+
+    assertEquals(roundTripPaymentEvent(providerEvent), providerEvent)
+    assertEquals(roundTripPaymentEvent(createdWithUnicodeToken), createdWithUnicodeToken)
+  }
+
+  test("PaymentEventSerializer rejects malformed payloads deterministically") {
+    val serializer = paymentEventSerializerFor(createdEvent(payment))
+    val manifest = serializer.manifest(createdEvent(payment))
+    val validPayload = serializer.toBinary(createdEvent(payment))
+
+    val negativeLengthFailure = intercept[NotSerializableException] {
+      serializer.fromBinary(
+        encodedPayload { out =>
+          out.writeInt(1)
+          out.writeInt(-1)
+        },
+        manifest
+      )
+    }
+    assert(negativeLengthFailure.getMessage.contains("Negative PaymentEvent tag length"))
+
+    val impossibleLengthFailure = intercept[NotSerializableException] {
+      serializer.fromBinary(
+        encodedPayload { out =>
+          out.writeInt(1)
+          out.writeInt(16)
+          out.write(Array[Byte](1, 2, 3, 4))
+        },
+        manifest
+      )
+    }
+    assert(impossibleLengthFailure.getMessage.contains("exceeds remaining PaymentEvent payload"))
+
+    val trailingBytesFailure = intercept[NotSerializableException] {
+      serializer.fromBinary(validPayload :+ 1.toByte, manifest)
+    }
+    assert(trailingBytesFailure.getMessage.contains("Unexpected trailing bytes"))
   }
 
   test("invalid command persists zero events and leaves NotCreated state") {
@@ -769,6 +873,49 @@ final class PaymentEntitySuite extends FunSuite:
       .persistedInStorage(PaymentEntity.persistenceId(paymentId))
       .collect { case event: PaymentEvent => event }
       .toList
+
+  private def roundTripPaymentEvent(event: PaymentEvent): PaymentEvent =
+    val serializer = paymentEventSerializerFor(event)
+    val manifest = serializer.manifest(event)
+    val bytes = serializer.toBinary(event)
+
+    serializer.fromBinary(bytes, manifest).asInstanceOf[PaymentEvent]
+
+  private def paymentEventSerializerFor(event: PaymentEvent): SerializerWithStringManifest =
+    val serializer = SerializationExtension(actorTestKit.system).findSerializerFor(event)
+
+    assertEquals(serializer.getClass, classOf[PaymentEventSerializer])
+    serializer match
+      case serializerWithManifest: SerializerWithStringManifest =>
+        serializerWithManifest
+      case other =>
+        fail(s"Expected SerializerWithStringManifest, got ${other.getClass.getName}")
+
+  private def encodedPayload(write: DataOutputStream => Unit): Array[Byte] =
+    val bytes = ByteArrayOutputStream()
+    val out = DataOutputStream(bytes)
+    write(out)
+    out.flush()
+    bytes.toByteArray
+
+  private def testApplicationConfText: String =
+    val stream = Option(getClass.getClassLoader.getResourceAsStream("application.conf"))
+      .getOrElse(fail("Missing test application.conf resource"))
+
+    try String(stream.readAllBytes(), StandardCharsets.UTF_8)
+    finally stream.close()
+
+  private def paymentEventCaseLabels: Set[String] =
+    labelsOf[PaymentEvent]
+
+  private inline def labelsOf[T](using mirror: Mirror.SumOf[T]): Set[String] =
+    labelsFromTuple[mirror.MirroredElemLabels]
+
+  private inline def labelsFromTuple[Labels <: Tuple]: Set[String] =
+    inline erasedValue[Labels] match
+      case _: EmptyTuple => Set.empty
+      case _: (head *: tail) =>
+        Set(constValue[head].asInstanceOf[String]) ++ labelsFromTuple[tail]
 
   private def samplePaymentEvents: List[PaymentEvent] =
     List(

@@ -17,7 +17,10 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.EOFException
+import java.io.IOException
 import java.io.NotSerializableException
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
 import scala.annotation.unused
@@ -51,11 +54,24 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
     if manifest != Manifest then
       throw new NotSerializableException(s"Unsupported manifest: $manifest")
 
-    val in = new DataInputStream(new ByteArrayInputStream(bytes))
-    val version = in.readInt()
-    if version != Version then throw new NotSerializableException(s"Unsupported version: $version")
+    try
+      val in = new DataInputStream(new ByteArrayInputStream(bytes))
+      val version = readInt(in, "PaymentEvent version")
+      if version != Version then
+        throw new NotSerializableException(s"Unsupported version: $version")
 
-    readEvent(in)
+      val event = readEvent(in)
+      if in.available() != 0 then
+        throw new NotSerializableException("Unexpected trailing bytes in PaymentEvent payload")
+      event
+    catch
+      case error: NotSerializableException => throw error
+      case error: EOFException =>
+        throw serializationFailure("Truncated PaymentEvent payload", error)
+      case error: IOException =>
+        throw serializationFailure("Malformed PaymentEvent payload", error)
+      case error: RuntimeException =>
+        throw serializationFailure("Malformed PaymentEvent payload", error)
 
   private def writeEvent(out: DataOutputStream, event: PaymentEvent): Unit =
     event match
@@ -68,7 +84,7 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
             paymentMethodToken,
             occurredAt
           ) =>
-        out.writeUTF("PaymentCreated")
+        writeString(out, "PaymentCreated")
         writePaymentId(out, paymentId)
         writeTenantId(out, tenantId)
         writeCustomerId(out, customerId)
@@ -120,7 +136,7 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
         writeOperationEvent(out, "RefundOutcomeUnknown", operationId, occurredAt)
 
   private def readEvent(in: DataInputStream): PaymentEvent =
-    in.readUTF() match
+    readString(in, "PaymentEvent tag") match
       case "PaymentCreated" =>
         PaymentEvent.PaymentCreated(
           readPaymentId(in),
@@ -191,7 +207,7 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
         throw new NotSerializableException(s"Unsupported PaymentEvent tag: $other")
 
   private def writeInstantOnly(out: DataOutputStream, tag: String, occurredAt: Instant): Unit =
-    out.writeUTF(tag)
+    writeString(out, tag)
     writeInstant(out, occurredAt)
 
   private def writeOperationEvent(
@@ -200,7 +216,7 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
       operationId: ProviderOperationId,
       occurredAt: Instant
   ): Unit =
-    out.writeUTF(tag)
+    writeString(out, tag)
     writeProviderOperationId(out, operationId)
     writeInstant(out, occurredAt)
 
@@ -212,7 +228,7 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
       amount: Money,
       occurredAt: Instant
   ): Unit =
-    out.writeUTF(tag)
+    writeString(out, tag)
     writeRefundId(out, refundId)
     writeProviderOperationId(out, operationId)
     writeMoney(out, amount)
@@ -259,28 +275,28 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
       out: DataOutputStream,
       value: ProviderOperationId
   ): Unit =
-    out.writeUTF(value.value)
+    writeString(out, value.value)
 
   private def readProviderOperationId(in: DataInputStream): ProviderOperationId =
     ProviderOperationId
-      .from(in.readUTF())
+      .from(readString(in, "ProviderOperationId"))
       .fold(error => throw new NotSerializableException(error.toString), identity)
 
   private def writePaymentMethodToken(out: DataOutputStream, value: PaymentMethodToken): Unit =
-    out.writeUTF(value.value)
+    writeString(out, value.value)
 
   private def readPaymentMethodToken(in: DataInputStream): PaymentMethodToken =
     PaymentMethodToken
-      .from(in.readUTF())
+      .from(readString(in, "PaymentMethodToken"))
       .fold(error => throw new NotSerializableException(error.toString), identity)
 
   private def writeMoney(out: DataOutputStream, value: Money): Unit =
-    out.writeUTF(value.amount.bigDecimal.toPlainString)
-    out.writeUTF(value.currency.productPrefix)
+    writeString(out, value.amount.bigDecimal.toPlainString)
+    writeString(out, value.currency.productPrefix)
 
   private def readMoney(in: DataInputStream): Money =
-    val amount = BigDecimal(in.readUTF())
-    val currency = Currency.valueOf(in.readUTF())
+    val amount = BigDecimal(readString(in, "Money amount"))
+    val currency = Currency.valueOf(readString(in, "Currency"))
     Money
       .from(amount, currency)
       .fold(error => throw new NotSerializableException(error.toString), identity)
@@ -291,6 +307,37 @@ final class PaymentEventSerializer(@unused system: ExtendedActorSystem)
 
   private def readInstant(in: DataInputStream): Instant =
     Instant.ofEpochSecond(in.readLong(), in.readInt().toLong)
+
+  private def writeString(out: DataOutputStream, value: String): Unit =
+    val bytes = value.getBytes(StandardCharsets.UTF_8)
+    out.writeInt(bytes.length)
+    out.write(bytes)
+
+  private def readString(in: DataInputStream, field: String): String =
+    val length = readInt(in, s"$field length")
+    if length < 0 then
+      throw new NotSerializableException(s"Negative $field length in PaymentEvent payload")
+
+    val remaining = in.available()
+    if length > remaining then
+      throw new NotSerializableException(
+        s"Declared $field length $length exceeds remaining PaymentEvent payload bytes $remaining"
+      )
+
+    val bytes = new Array[Byte](length)
+    in.readFully(bytes)
+    String(bytes, StandardCharsets.UTF_8)
+
+  private def readInt(in: DataInputStream, field: String): Int =
+    try in.readInt()
+    catch
+      case error: EOFException =>
+        throw serializationFailure(s"Missing $field in PaymentEvent payload", error)
+
+  private def serializationFailure(message: String, cause: Throwable): NotSerializableException =
+    val failure = NotSerializableException(message)
+    failure.initCause(cause)
+    failure
 
 object PaymentEventSerializer:
   val Identifier: Int = 55032031
