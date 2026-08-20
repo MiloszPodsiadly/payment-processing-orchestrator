@@ -21,6 +21,8 @@ import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.persistence.testkit.PersistenceTestKitPlugin
 import org.apache.pekko.persistence.testkit.PersistenceTestKitSnapshotPlugin
 import org.apache.pekko.persistence.testkit.scaladsl.PersistenceTestKit
+import org.apache.pekko.serialization.SerializationExtension
+import org.apache.pekko.serialization.SerializerWithStringManifest
 
 import java.time.Instant
 import java.util.UUID
@@ -45,15 +47,7 @@ final class PaymentEntitySuite extends FunSuite:
 
   test("create persists PaymentCreated and recovers Created state") {
     val entity = spawn(payment.paymentId)
-    val expectedEvent = PaymentEvent.PaymentCreated(
-      payment.paymentId,
-      payment.tenantId,
-      payment.customerId,
-      payment.merchantId,
-      payment.amount,
-      payment.paymentMethodToken,
-      payment.createdAt
-    )
+    val expectedEvent = createdEvent(payment)
 
     val reply = execute(entity, createCommand())
 
@@ -64,6 +58,38 @@ final class PaymentEntitySuite extends FunSuite:
 
     assertEquals(recoveredReply.error, PaymentError.PaymentAlreadyCreated)
     assertEquals(recoveredReply.state, PaymentState.Created(payment))
+  }
+
+  test("PaymentEvent serialization binding round-trips every concrete event") {
+    val serialization = SerializationExtension(actorTestKit.system)
+
+    samplePaymentEvents.foreach { event =>
+      val serializer = serialization.findSerializerFor(event)
+
+      assertEquals(serializer.getClass, classOf[PaymentEventSerializer])
+
+      val serializerWithManifest = serializer match
+        case serializerWithManifest: SerializerWithStringManifest =>
+          serializerWithManifest
+        case other =>
+          fail(s"Expected SerializerWithStringManifest, got ${other.getClass.getName}")
+      val manifest = serializerWithManifest.manifest(event)
+      val bytes = serializer.toBinary(event)
+      val reconstructed =
+        serializerWithManifest.fromBinary(bytes, manifest).asInstanceOf[PaymentEvent]
+
+      assertEquals(reconstructed, event)
+    }
+  }
+
+  test("PaymentEvent serialization does not fall back to Java serialization") {
+    assert(!actorTestKit.system.settings.config.getBoolean("pekko.actor.allow-java-serialization"))
+
+    val serializer =
+      SerializationExtension(actorTestKit.system).findSerializerFor(createdEvent(payment))
+
+    assertEquals(serializer.getClass, classOf[PaymentEventSerializer])
+    assertNotEquals(serializer.getClass.getName, "org.apache.pekko.serialization.JavaSerializer")
   }
 
   test("invalid command persists zero events and leaves NotCreated state") {
@@ -98,15 +124,7 @@ final class PaymentEntitySuite extends FunSuite:
     assertEquals(
       persistedEvents(payment.paymentId),
       List(
-        PaymentEvent.PaymentCreated(
-          payment.paymentId,
-          payment.tenantId,
-          payment.customerId,
-          payment.merchantId,
-          payment.amount,
-          payment.paymentMethodToken,
-          payment.createdAt
-        ),
+        createdEvent(payment),
         PaymentEvent.FraudCheckRequested(now),
         PaymentEvent.FraudCheckPassed(now),
         PaymentEvent.AuthorizationRequested(operation("auth-1"), now)
@@ -194,6 +212,43 @@ final class PaymentEntitySuite extends FunSuite:
     assertEquals(recoveredReply.state, stateBeforeRestart)
   }
 
+  test("authorization pending recovers exact operation identity and duplicate semantics") {
+    val entity = spawn(payment.paymentId)
+    val pendingBeforeRestart =
+      executeFlow(
+        entity,
+        List(
+          createCommand(),
+          PaymentCommand.StartFraudCheck(now),
+          PaymentCommand.RecordFraudApproved(now),
+          PaymentCommand.AuthorizePayment(operation("auth-1"), now)
+        )
+      )
+
+    actorTestKit.stop(entity)
+    val recovered = spawn(payment.paymentId)
+    val beforeDuplicate = persistedEvents(payment.paymentId)
+
+    val duplicateReply =
+      execute(recovered, PaymentCommand.AuthorizePayment(operation("auth-1"), now))
+
+    assertEquals(duplicateReply, PaymentEntity.DuplicateAccepted(pendingBeforeRestart))
+    assertEquals(persistedEvents(payment.paymentId), beforeDuplicate)
+
+    val beforeConflict = persistedEvents(payment.paymentId)
+    val conflictReply =
+      execute(recovered, PaymentCommand.AuthorizePayment(operation("auth-2"), now))
+
+    assertEquals(
+      conflictReply,
+      PaymentEntity.Rejected(
+        PaymentError.OperationMismatch(operation("auth-1"), operation("auth-2")),
+        pendingBeforeRestart
+      )
+    )
+    assertEquals(persistedEvents(payment.paymentId), beforeConflict)
+  }
+
   test("captured state recovers structurally") {
     val entity = spawn(payment.paymentId)
     val stateBeforeRestart = executeFlow(entity, capturedCommands)
@@ -202,6 +257,45 @@ final class PaymentEntitySuite extends FunSuite:
 
     assertEquals(stateBeforeRestart.productPrefix, "Captured")
     assertEquals(recoveredReply.state, stateBeforeRestart)
+  }
+
+  test("capture pending recovers exact operation identity and duplicate semantics") {
+    val entity = spawn(payment.paymentId)
+    val pendingBeforeRestart =
+      executeFlow(
+        entity,
+        List(
+          createCommand(),
+          PaymentCommand.StartFraudCheck(now),
+          PaymentCommand.RecordFraudApproved(now),
+          PaymentCommand.AuthorizePayment(operation("auth-1"), now),
+          PaymentCommand.RecordAuthorizationSucceeded(operation("auth-1"), now),
+          PaymentCommand.CapturePayment(operation("capture-1"), now)
+        )
+      )
+
+    actorTestKit.stop(entity)
+    val recovered = spawn(payment.paymentId)
+    val beforeDuplicate = persistedEvents(payment.paymentId)
+
+    val duplicateReply =
+      execute(recovered, PaymentCommand.CapturePayment(operation("capture-1"), now))
+
+    assertEquals(duplicateReply, PaymentEntity.DuplicateAccepted(pendingBeforeRestart))
+    assertEquals(persistedEvents(payment.paymentId), beforeDuplicate)
+
+    val beforeConflict = persistedEvents(payment.paymentId)
+    val conflictReply =
+      execute(recovered, PaymentCommand.CapturePayment(operation("capture-2"), now))
+
+    assertEquals(
+      conflictReply,
+      PaymentEntity.Rejected(
+        PaymentError.OperationMismatch(operation("capture-1"), operation("capture-2")),
+        pendingBeforeRestart
+      )
+    )
+    assertEquals(persistedEvents(payment.paymentId), beforeConflict)
   }
 
   test("unknown authorization state recovers with exact provider operation identity") {
@@ -302,6 +396,65 @@ final class PaymentEntitySuite extends FunSuite:
         assertEquals(pending.amount, money("30.00"))
       case other =>
         fail(s"Expected RefundUnknown, got ${other.productPrefix}")
+  }
+
+  test("refund pending recovers exact pending identity and duplicate semantics") {
+    val entity = spawn(payment.paymentId)
+    val pendingBeforeRestart =
+      executeFlow(
+        entity,
+        capturedCommands :+ PaymentCommand.RefundPayment(
+          refundId(1),
+          operation("refund-1"),
+          money("30.00"),
+          now
+        )
+      )
+
+    actorTestKit.stop(entity)
+    val recovered = spawn(payment.paymentId)
+    val beforeDuplicate = persistedEvents(payment.paymentId)
+
+    val duplicateReply =
+      execute(
+        recovered,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-1"), money("30.00"), now)
+      )
+
+    assertEquals(duplicateReply, PaymentEntity.DuplicateAccepted(pendingBeforeRestart))
+    assertEquals(persistedEvents(payment.paymentId), beforeDuplicate)
+
+    val beforeChangedSameRefund = persistedEvents(payment.paymentId)
+    val changedSameRefundReply =
+      execute(
+        recovered,
+        PaymentCommand.RefundPayment(refundId(1), operation("refund-2"), money("31.00"), now)
+      )
+
+    assertEquals(
+      changedSameRefundReply,
+      PaymentEntity.Rejected(
+        PaymentError.DuplicateRefundConflict(refundId(1)),
+        pendingBeforeRestart
+      )
+    )
+    assertEquals(persistedEvents(payment.paymentId), beforeChangedSameRefund)
+
+    val beforeNewRefund = persistedEvents(payment.paymentId)
+    val newRefundReply =
+      execute(
+        recovered,
+        PaymentCommand.RefundPayment(refundId(2), operation("refund-2"), money("1.00"), now)
+      )
+
+    assertEquals(
+      newRefundReply,
+      PaymentEntity.Rejected(
+        PaymentError.OperationMismatch(operation("refund-1"), operation("refund-2")),
+        pendingBeforeRestart
+      )
+    )
+    assertEquals(persistedEvents(payment.paymentId), beforeNewRefund)
   }
 
   test("full refund recovery preserves exact refunded state") {
@@ -421,6 +574,55 @@ final class PaymentEntitySuite extends FunSuite:
     )
   }
 
+  test("cross-payment PaymentCreated in journal fails recovery before command handling") {
+    val entityPaymentId =
+      PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000921"))
+    val wrongPayment = paymentWithId(
+      PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000922"))
+    )
+    val replyProbe = actorTestKit.createTestProbe[PaymentEntity.Reply]()
+    val deathProbe = actorTestKit.createTestProbe[Nothing]()
+
+    persistenceTestKit.persistForRecovery(
+      PaymentEntity.persistenceId(entityPaymentId),
+      List(createdEvent(wrongPayment))
+    )
+    val entity = spawn(entityPaymentId)
+    val beforeCommand = persistedEvents(entityPaymentId)
+
+    entity ! PaymentEntity.Execute(PaymentCommand.StartFraudCheck(now), replyProbe.ref)
+
+    replyProbe.expectNoMessage(500.millis)
+    deathProbe.expectTerminated(entity, 5.seconds)
+    assertEquals(persistedEvents(entityPaymentId), beforeCommand)
+  }
+
+  test("matching PaymentCreated in journal recovers and accepts subsequent legal command") {
+    val entityPayment = paymentWithId(
+      PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000923"))
+    )
+
+    persistenceTestKit.persistForRecovery(
+      PaymentEntity.persistenceId(entityPayment.paymentId),
+      List(createdEvent(entityPayment))
+    )
+    val entity = spawn(entityPayment.paymentId)
+
+    val reply = execute(entity, PaymentCommand.StartFraudCheck(now))
+
+    assertEquals(
+      reply,
+      PaymentEntity.Accepted(
+        PaymentState.FraudCheckPending(entityPayment),
+        List(PaymentEvent.FraudCheckRequested(now))
+      )
+    )
+    assertEquals(
+      persistedEvents(entityPayment.paymentId),
+      List(createdEvent(entityPayment), PaymentEvent.FraudCheckRequested(now))
+    )
+  }
+
   test("persistence id is deterministic, stable and payment-specific") {
     val paymentIdA =
       PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000911"))
@@ -462,8 +664,14 @@ final class PaymentEntitySuite extends FunSuite:
 
     val replies = probe.receiveMessages(100, 5.seconds)
 
-    assertEquals(replies.count(_.isInstanceOf[PaymentEntity.Accepted]), 1)
-    assertEquals(replies.count(_.isInstanceOf[PaymentEntity.Rejected]), 99)
+    val acceptedReplies = replies.collect { case accepted: PaymentEntity.Accepted => accepted }
+    val rejectedReplies = replies.collect { case rejected: PaymentEntity.Rejected => rejected }
+
+    assertEquals(acceptedReplies.size, 1)
+    assertEquals(rejectedReplies.size, 99)
+    assert(rejectedReplies.forall(_.error match
+      case PaymentError.OperationMismatch(_, _) => true
+      case _ => false))
     assertEquals(
       persistedEvents(payment.paymentId).map(_.productPrefix),
       List(
@@ -562,6 +770,35 @@ final class PaymentEntitySuite extends FunSuite:
       .collect { case event: PaymentEvent => event }
       .toList
 
+  private def samplePaymentEvents: List[PaymentEvent] =
+    List(
+      createdEvent(payment),
+      PaymentEvent.FraudCheckRequested(now),
+      PaymentEvent.FraudCheckPassed(now),
+      PaymentEvent.FraudCheckRejected(now),
+      PaymentEvent.FraudManualReviewRequired(now),
+      PaymentEvent.FraudManualReviewApproved(now),
+      PaymentEvent.FraudManualReviewRejected(now),
+      PaymentEvent.AuthorizationRequested(operation("auth-1"), now),
+      PaymentEvent.PaymentAuthorized(operation("auth-1"), now),
+      PaymentEvent.PaymentDeclined(operation("auth-1"), now),
+      PaymentEvent.AuthorizationOutcomeUnknown(operation("auth-1"), now),
+      PaymentEvent.CaptureRequested(operation("capture-1"), now),
+      PaymentEvent.PaymentCaptured(operation("capture-1"), now),
+      PaymentEvent.CaptureFailed(operation("capture-1"), now),
+      PaymentEvent.CaptureOutcomeUnknown(operation("capture-1"), now),
+      PaymentEvent.RefundRequested(refundId(1), operation("refund-1"), money("30.00"), now),
+      PaymentEvent.PaymentPartiallyRefunded(
+        refundId(1),
+        operation("refund-1"),
+        money("30.00"),
+        now
+      ),
+      PaymentEvent.PaymentRefunded(refundId(1), operation("refund-1"), money("100.00"), now),
+      PaymentEvent.RefundFailed(operation("refund-1"), now),
+      PaymentEvent.RefundOutcomeUnknown(operation("refund-1"), now)
+    )
+
   private def capturedCommands: List[PaymentCommand] =
     List(
       createCommand(),
@@ -575,6 +812,17 @@ final class PaymentEntitySuite extends FunSuite:
 
   private def createCommand(source: Payment = payment): PaymentCommand.CreatePayment =
     PaymentCommand.CreatePayment(
+      source.paymentId,
+      source.tenantId,
+      source.customerId,
+      source.merchantId,
+      source.amount,
+      source.paymentMethodToken,
+      source.createdAt
+    )
+
+  private def createdEvent(source: Payment): PaymentEvent.PaymentCreated =
+    PaymentEvent.PaymentCreated(
       source.paymentId,
       source.tenantId,
       source.customerId,
@@ -608,15 +856,6 @@ final class PaymentEntitySuite extends FunSuite:
     Money.from(BigDecimal(value), Currency.PLN).fold(error => fail(error.toString), identity)
 
   private def testKitConfig =
-    ConfigFactory
-      .parseString(
-        """
-          |pekko.persistence.journal.plugin = "pekko.persistence.testkit.journal"
-          |pekko.persistence.snapshot-store.plugin = "pekko.persistence.testkit.snapshotstore.pluginid"
-          |pekko.persistence.testkit.events.serialize = false
-          |pekko.persistence.testkit.snapshots.serialize = false
-          |""".stripMargin
-      )
-      .withFallback(PersistenceTestKitPlugin.config)
+    PersistenceTestKitPlugin.config
       .withFallback(PersistenceTestKitSnapshotPlugin.config)
       .withFallback(ConfigFactory.load())
