@@ -17,7 +17,12 @@ final case class ApplicationConfig(name: String, environment: RuntimeEnvironment
 
 final case class HttpConfig(interface: String, port: Int)
 
-final case class CassandraConfig(host: String, port: Int, localDatacenter: String)
+final case class CassandraConfig(
+    host: String,
+    port: Int,
+    localDatacenter: String,
+    keyspace: String
+)
 
 final case class SecurityConfig(tokenIssuer: String)
 
@@ -51,7 +56,8 @@ object AppConfig:
         cassandra = CassandraConfig(
           host = requiredNonBlank(resolved, "payment.cassandra.host"),
           port = requiredPort(resolved, "payment.cassandra.port"),
-          localDatacenter = requiredNonBlank(resolved, "payment.cassandra.local-datacenter")
+          localDatacenter = requiredNonBlank(resolved, "payment.cassandra.local-datacenter"),
+          keyspace = requiredNonBlank(resolved, "payment.cassandra.keyspace")
         ),
         security = SecurityConfig(
           tokenIssuer = requiredNonBlank(resolved, "payment.security.token-issuer")
