@@ -44,5 +44,5 @@ jobs:
       - name: Architecture checks
         run: sbt verifyArchitecture
 
-      - name: Integration-test compile
-        run: sbt integrationTests/Test/compile
+      - name: Cassandra integration tests
+        run: sbt integrationTests/Test/testFull
