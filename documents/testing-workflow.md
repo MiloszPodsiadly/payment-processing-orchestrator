@@ -1,6 +1,7 @@
 # Testing Workflow
 
-Phase 3 adds Pekko PaymentEntity runtime/persistence tests on top of the Phase 1 and Phase 2 testing platform.
+Phase 4 adds real Cassandra journal integration tests on top of the Phase 1, Phase 2,
+and Phase 3 testing platform.
 
 ## Test Categories
 
@@ -9,16 +10,15 @@ Phase 3 adds Pekko PaymentEntity runtime/persistence tests on top of the Phase 1
 - Formatting verification: `sbt "scalafmtSbtCheck; scalafmtCheckAll"`
 - Static analysis: `sbt "scalafixAll --check"`
 - Architecture checks: `sbt verifyArchitecture`
-- Integration-test compilation: `sbt integrationTests/Test/compile`
-- Full CI-equivalent local check: `sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; testFull; verifyArchitecture; integrationTests/Test/compile"`
+- Cassandra integration tests: `sbt integrationTests/Test/testFull`
+- Full CI-equivalent local check: `sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; testFull; verifyArchitecture; integrationTests/Test/testFull"`
 
 `sbt test` is intentionally kept as normal sbt incremental/cache-aware feedback for
 local fast unit/module tests. Mandatory CI uses `sbt testFull` so the complete fast
 test suite is physically executed on the current HEAD.
 
-The `integration-tests` project remains explicitly invoked. In Phase 1, CI compiles
-integration-test sources through `sbt integrationTests/Test/compile`; it does not execute
-future Cassandra/Testcontainers integration suites as part of the fast test workflow.
+The `integration-tests` project remains explicitly invoked. Starting in Phase 4, CI runs
+the Cassandra/Testcontainers suites separately from the fast unit/module workflow.
 
 ## Current Test Coverage
 
@@ -27,9 +27,10 @@ future Cassandra/Testcontainers integration suites as part of the fast test work
 - `domain` has property-based tests for Money precision, core payment immutability, refund bounds, single capture, fraud/decline safety, unknown safety, duplicate mutation intent, decide/evolve consistency, corrupted refund-history mutation rejection, and state-aware generated lifecycle traces with invariants checked after each accepted step.
 - `domain` has transition-matrix and ADT inventory tests covering every implemented `PaymentState`, `PaymentCommand`, and `PaymentEvent` case, important illegal commands, wrong provider operation results, duplicate results, out-of-order results, and invalid event history.
 - `runtime-pekko` has actor/persistence tests for the Phase 3 PaymentEntity shell using Pekko Persistence TestKit, including persisted event inspection, accepted/rejected/no-op behavior, restart recovery, Pending recovery, Unknown recovery, journal write failure, corrupt history, cross-PaymentId recovery contamination, deterministic persistence IDs, runtime-owned `PaymentEvent` serializer config, compiler-derived serializer fixture inventory, current-version `PaymentEvent` round-trip coverage, malformed serializer payload rejection, and rapid conflicting command serialization.
-- `bootstrap` has configuration loader tests covering explicit runtime environment, typed provider mode, missing mandatory fields, invalid values, unsupported production runtime, and unsafe production placeholders.
+- `bootstrap` has configuration loader tests covering explicit runtime environment, typed provider mode, Cassandra host/port/datacenter/keyspace, missing mandatory fields, invalid values, unsupported production runtime, unsafe production placeholders, and unsafe Cassandra journal settings.
 - `integration-tests` has source boundary checks for forbidden framework imports in `domain` and `application`, including negative fixtures for missing directories and forbidden imports.
-- `verifyArchitecture` checks expected repository directories, approved production compile dependencies for `domain` and `application`, approved direct production dependencies for `runtime-pekko`, known-forbidden dependency families as defense in depth, the `runtime-pekko` absence of Cassandra/Tapir/cluster/projection dependencies, the direct sbt project graph, and then runs the architecture source-boundary suite.
+- `integration-tests` has Cassandra Testcontainers tests for schema migration, startup validation, cross-ActorSystem recovery, pending/unknown recovery, aggregate isolation, journal row serializer metadata, missing schema fail-closed behavior, and static v1 serializer fixtures.
+- `verifyArchitecture` checks expected repository directories, approved production compile dependencies for `domain` and `application`, approved direct production dependencies for `runtime-pekko` and `adapter-cassandra`, known-forbidden dependency families as defense in depth, the `runtime-pekko` absence of Cassandra/Tapir/cluster/projection dependencies, the `adapter-cassandra` absence of Tapir/cluster/projection dependencies, the direct sbt project graph, and then runs the architecture source-boundary suite.
 - The architecture gate includes a pure negative fixture proving an unapproved external compile dependency fails the approval policy.
 
 Current event serialization round-trip correctness is tested for the current code version.
@@ -40,7 +41,6 @@ upcaster coverage.
 
 ## Deferred Test Work
 
-- Cassandra Testcontainers tests
 - Tapir endpoint contract tests
 - Projection idempotency tests
-- Failure and resilience tests
+- Broader failure and resilience tests

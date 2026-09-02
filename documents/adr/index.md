@@ -10,7 +10,7 @@ Initial ADRs are identified during Phase 0 and will be expanded as the implement
 - ADR-004: Use hexagonal architecture
 - ADR-005: Use Apache Pekko Typed
 - ADR-006: Use event sourcing for the payment aggregate
-- ADR-007: Use Cassandra as persistence journal
+- [ADR-007: Use Cassandra as persistence journal](ADR-007-use-cassandra-as-persistence-journal.md)
 - ADR-008: Use CQRS read models
 - ADR-009: Use Pekko Projections for read-side updates
 - ADR-010: Use permission-based RBAC
