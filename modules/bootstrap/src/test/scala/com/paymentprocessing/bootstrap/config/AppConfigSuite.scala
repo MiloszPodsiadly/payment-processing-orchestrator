@@ -1,5 +1,6 @@
 package com.paymentprocessing.bootstrap.config
 
+import com.paymentprocessing.adapter.cassandra.CassandraJournalContract
 import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupValidator
 import com.typesafe.config.ConfigFactory
 import munit.FunSuite
@@ -13,7 +14,7 @@ final class AppConfigSuite extends FunSuite:
     assertEquals(loaded.map(_.application.environment), Right(RuntimeEnvironment.Test))
     assertEquals(loaded.map(_.provider.mode), Right(ProviderMode.Mock))
     assertEquals(loaded.map(_.http.interface), Right("127.0.0.1"))
-    assertEquals(loaded.map(_.cassandra.keyspace), Right("pekko"))
+    assertEquals(loaded.map(_.cassandra.localDatacenter), Right("datacenter1"))
   }
 
   test("loads valid local configuration") {
@@ -93,11 +94,10 @@ final class AppConfigSuite extends FunSuite:
     )
   }
 
-  test("rejects blank Cassandra host, local datacenter and keyspace") {
+  test("rejects blank Cassandra host and local datacenter") {
     val invalidValues = Seq(
       "payment.cassandra.host" -> "payment.cassandra.host must be non-blank",
-      "payment.cassandra.local-datacenter" -> "payment.cassandra.local-datacenter must be non-blank",
-      "payment.cassandra.keyspace" -> "payment.cassandra.keyspace must be non-blank"
+      "payment.cassandra.local-datacenter" -> "payment.cassandra.local-datacenter must be non-blank"
     )
 
     val loaded = invalidValues.map { case (path, _) =>
@@ -109,17 +109,17 @@ final class AppConfigSuite extends FunSuite:
 
   test("resolves Cassandra journal contact point from typed payment config") {
     val resolved =
-      ConfigFactory
-        .parseString("""
-          payment.application.environment = "test"
-          payment.cassandra.host = "10.20.30.40"
-          payment.cassandra.port = 9142
-          payment.cassandra.local-datacenter = "phase4dc"
-          payment.cassandra.keyspace = "phase4_pekko"
-        """)
-        .withFallback(ConfigFactory.parseResources("application.conf"))
-        .withFallback(ConfigFactory.defaultReference())
-        .resolve()
+      ProductionRuntimeConfig
+        .load(
+          ConfigFactory.parseString("""
+            payment.application.environment = "test"
+            payment.cassandra.host = "10.20.30.40"
+            payment.cassandra.port = 9142
+            payment.cassandra.local-datacenter = "phase4dc"
+          """)
+        )
+        .toOption
+        .get
 
     assertEquals(
       resolved.getString("pekko.persistence.journal.plugin"),
@@ -127,7 +127,7 @@ final class AppConfigSuite extends FunSuite:
     )
     assertEquals(
       resolved.getString("pekko.persistence.cassandra.journal.keyspace"),
-      "phase4_pekko"
+      CassandraJournalContract.CanonicalKeyspace
     )
     assertEquals(
       resolved.getStringList("datastax-java-driver.basic.contact-points").get(0),
@@ -137,6 +137,90 @@ final class AppConfigSuite extends FunSuite:
       resolved.getString("datastax-java-driver.basic.load-balancing-policy.local-datacenter"),
       "phase4dc"
     )
+  }
+
+  test("production runtime config rejects unresolved substitutions as typed configuration errors") {
+    val loaded =
+      ProductionRuntimeConfig.load(
+        ConfigFactory.parseString("""payment.cassandra.host = ${MISSING_PAYMENT_CASSANDRA_HOST}""")
+      )
+
+    assert(loaded.left.exists(_.message.startsWith("Invalid configuration:")))
+  }
+
+  test("production runtime config owns journal policy as one source of truth") {
+    val resolved =
+      ProductionRuntimeConfig
+        .load(ConfigFactory.parseString("""payment.application.environment = "test""""))
+        .toOption
+        .get
+
+    assertEquals(
+      resolved.getString("pekko.persistence.cassandra.journal.keyspace"),
+      CassandraJournalContract.CanonicalKeyspace
+    )
+    assertEquals(
+      resolved.getInt("pekko.persistence.cassandra.journal.target-partition-size"),
+      CassandraJournalContract.TargetPartitionSize
+    )
+    assertEquals(
+      CassandraPersistenceStartupValidator.validateConfiguration(resolved).map(_.keyspace),
+      Right(CassandraJournalContract.CanonicalKeyspace)
+    )
+  }
+
+  test("Cassandra persistence config validation rejects non-canonical journal contract changes") {
+    val wrongKeyspace =
+      ConfigFactory
+        .parseString("""
+          payment.application.environment = "test"
+          pekko.persistence.cassandra.journal.keyspace = "payment_journal"
+        """)
+        .withFallback(resolvedValidRuntimeConfig)
+        .resolve()
+    val wrongPartitionSize =
+      ConfigFactory
+        .parseString("""
+          payment.application.environment = "test"
+          pekko.persistence.cassandra.journal.target-partition-size = 1
+        """)
+        .withFallback(resolvedValidRuntimeConfig)
+        .resolve()
+
+    assertEquals(
+      CassandraPersistenceStartupValidator.validateConfiguration(wrongKeyspace).left.map(_.message),
+      Left(
+        "Invalid Cassandra persistence configuration: pekko.persistence.cassandra.journal.keyspace must be 'pekko', got 'payment_journal'"
+      )
+    )
+    assertEquals(
+      CassandraPersistenceStartupValidator
+        .validateConfiguration(wrongPartitionSize)
+        .left
+        .map(_.message),
+      Left(
+        "Invalid Cassandra persistence configuration: pekko.persistence.cassandra.journal.target-partition-size must be 500000"
+      )
+    )
+  }
+
+  test(
+    "Cassandra persistence config validation converts wrong typed config values to typed errors"
+  ) {
+    val wrongTypedDeletes =
+      ConfigFactory
+        .parseString("""
+          payment.application.environment = "test"
+          pekko.persistence.cassandra.journal.support-deletes = 42
+        """)
+        .withFallback(resolvedValidRuntimeConfig)
+        .resolve()
+
+    val loaded = CassandraPersistenceStartupValidator.validateConfiguration(wrongTypedDeletes)
+
+    assert(loaded.left.exists { case error =>
+      error.message.startsWith("Invalid Cassandra persistence configuration:")
+    })
   }
 
   test("Cassandra persistence config validation rejects unsafe journal defaults") {
@@ -191,6 +275,7 @@ final class AppConfigSuite extends FunSuite:
             keyspace-autocreate = false
             tables-autocreate = false
             support-deletes = false
+            target-partition-size = 500000
           }
           datastax-java-driver.advanced.reconnect-on-init = true
           datastax-java-driver.basic.load-balancing-policy.local-datacenter = "datacenter1"
@@ -317,7 +402,6 @@ final class AppConfigSuite extends FunSuite:
             host = "127.0.0.1"
             port = 9042
             local-datacenter = "datacenter1"
-            keyspace = "pekko"
           }
 
           security {
@@ -350,7 +434,6 @@ final class AppConfigSuite extends FunSuite:
             host = "127.0.0.1"
             port = 9042
             local-datacenter = "datacenter1"
-            keyspace = "pekko"
           }
 
           security {

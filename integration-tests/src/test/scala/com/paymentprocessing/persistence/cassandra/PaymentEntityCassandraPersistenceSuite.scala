@@ -2,9 +2,11 @@ package com.paymentprocessing.persistence.cassandra
 
 import com.datastax.oss.driver.api.core.CqlSession
 import com.datastax.oss.driver.api.core.cql.Row
+import com.paymentprocessing.adapter.cassandra.CassandraJournalContract
 import com.paymentprocessing.adapter.cassandra.CassandraJournalSchema
 import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupError
-import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupValidator
+import com.paymentprocessing.bootstrap.config.ProductionRuntimeConfig
+import com.paymentprocessing.bootstrap.runtime.PaymentRuntime
 import com.paymentprocessing.domain.identity.CustomerId
 import com.paymentprocessing.domain.identity.MerchantId
 import com.paymentprocessing.domain.identity.PaymentId
@@ -24,14 +26,12 @@ import com.typesafe.config.ConfigFactory
 import munit.FunSuite
 import org.apache.pekko.actor.testkit.typed.scaladsl.ActorTestKit
 import org.apache.pekko.actor.typed.ActorRef
-import org.apache.pekko.actor.typed.scaladsl.adapter._
 import org.testcontainers.cassandra.CassandraContainer
 
 import java.time.Instant
 import java.util.UUID
 import scala.compiletime.uninitialized
 import scala.concurrent.Await
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
@@ -49,38 +49,45 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
         .addContactPoint(cassandra.getContactPoint)
         .withLocalDatacenter(cassandra.getLocalDatacenter)
         .build()
-    CassandraJournalSchema.applyMigration(cqlSession)
+    CassandraMigrationTestSupport.applyMigration(cqlSession)
 
   override def afterAll(): Unit =
     if cqlSession != null then cqlSession.close()
     if cassandra != null then cassandra.stop()
 
   test("migration creates the required Pekko Cassandra journal schema and is idempotent") {
-    CassandraJournalSchema.applyMigration(cqlSession)
+    CassandraMigrationTestSupport.applyMigration(cqlSession)
 
-    assert(CassandraJournalSchema.tableNames(cqlSession).contains("messages"))
+    assert(CassandraMigrationTestSupport.tableNames(cqlSession).contains("messages"))
     assertEquals(
-      CassandraJournalSchema.RequiredTables.diff(CassandraJournalSchema.tableNames(cqlSession)),
+      CassandraJournalSchema.RequiredTables.diff(CassandraMigrationTestSupport.tableNames(cqlSession)),
       Set.empty
     )
     assertEquals(
       CassandraJournalSchema.RequiredMessagesColumns.diff(
-        CassandraJournalSchema.messagesColumns(cqlSession)
+        CassandraMigrationTestSupport.messagesColumns(cqlSession)
       ),
       Set.empty
     )
   }
 
-  test("startup validation accepts only the prepared Cassandra journal schema") {
-    val kit = actorTestKit()
-    try
-      given ExecutionContext = kit.system.executionContext
+  test("production runtime returns ready only after prepared Cassandra journal validation succeeds") {
+    val started =
+      Await.result(PaymentRuntime.start(testContainerOverrides(), 15.seconds), 25.seconds)
 
-      val result =
-        Await.result(CassandraPersistenceStartupValidator.validate(kit.system.toClassic, 15.seconds), 20.seconds)
-
-      assertEquals(result, Right(()))
-    finally kit.shutdownTestKit()
+    started match
+      case Right(runtime) =>
+        try
+          assertEquals(runtime.appConfig.cassandra.localDatacenter, cassandra.getLocalDatacenter)
+          assertEquals(
+            runtime.system.settings.config.getString("pekko.persistence.cassandra.journal.keyspace"),
+            CassandraJournalContract.CanonicalKeyspace
+          )
+        finally
+          runtime.system.terminate()
+          val _ = Await.result(runtime.system.whenTerminated, 10.seconds)
+      case Left(error) =>
+        fail(s"Expected production runtime readiness, got ${error.message}")
   }
 
   test("actor system one persists payment state and actor system two recovers it exactly") {
@@ -230,76 +237,146 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
   }
 
   test("startup validation fails closed when Cassandra is unavailable") {
-    val kit = actorTestKit(unavailableCassandraConfig())
-    try
-      given ExecutionContext = kit.system.executionContext
+    val result =
+      Await.result(PaymentRuntime.start(unavailableCassandraOverrides(), 2.seconds), 10.seconds)
 
+    assert(result.left.exists {
+      case _: CassandraPersistenceStartupError.CassandraUnavailable => true
+      case _ => false
+    })
+  }
+
+  test("production runtime reports missing canonical keyspace and does not autocreate schema") {
+    withCassandraContainer { container =>
       val result =
-        Await.result(CassandraPersistenceStartupValidator.validate(kit.system.toClassic, 2.seconds), 8.seconds)
+        Await.result(PaymentRuntime.start(testContainerOverrides(container), 10.seconds), 20.seconds)
 
-      assert(result.left.exists {
-        case _: CassandraPersistenceStartupError.CassandraUnavailable => true
-        case _ => false
-      })
       assertEquals(
-        kit.system.settings.config.getString("pekko.persistence.journal.plugin"),
-        "pekko.persistence.cassandra.journal"
+        result.left.map(_.message),
+        Left(s"Cassandra keyspace '${CassandraJournalContract.CanonicalKeyspace}' is missing")
       )
-    finally kit.shutdownTestKit()
+      withCqlSession(container) { session =>
+        assert(
+          !CassandraMigrationTestSupport
+            .tableNames(session, CassandraJournalContract.CanonicalKeyspace)
+            .contains("messages")
+        )
+      }
+    }
   }
 
-  test("startup validation reports missing keyspaces and does not autocreate schema") {
-    val missingKeyspace = uniqueKeyspace("missing")
-    val kit = actorTestKit(cassandraJournalConfig(missingKeyspace))
-    try
-      given ExecutionContext = kit.system.executionContext
+  test("production runtime reports missing canonical journal tables and leaves autocreate disabled") {
+    withCassandraContainer { container =>
+      withCqlSession(container) { session =>
+        createCanonicalKeyspace(session, container)
+      }
 
       val result =
-        Await.result(CassandraPersistenceStartupValidator.validate(kit.system.toClassic, 10.seconds), 15.seconds)
-
-      assertEquals(result.left.map(_.message), Left(s"Cassandra keyspace '$missingKeyspace' is missing"))
-      assert(!CassandraJournalSchema.tableNames(cqlSession, missingKeyspace).contains("messages"))
-    finally kit.shutdownTestKit()
-  }
-
-  test("startup validation reports missing journal tables and leaves autocreate disabled") {
-    val keyspace = uniqueKeyspace("tables")
-    cqlSession.execute(
-      s"CREATE KEYSPACE IF NOT EXISTS $keyspace WITH replication = {'class': 'NetworkTopologyStrategy', '${cassandra.getLocalDatacenter}': 1}"
-    )
-    val kit = actorTestKit(cassandraJournalConfig(keyspace))
-    try
-      given ExecutionContext = kit.system.executionContext
-
-      val result =
-        Await.result(CassandraPersistenceStartupValidator.validate(kit.system.toClassic, 10.seconds), 15.seconds)
+        Await.result(PaymentRuntime.start(testContainerOverrides(container), 10.seconds), 20.seconds)
 
       assert(result.left.exists(_.isInstanceOf[CassandraPersistenceStartupError.MissingJournalTable]))
-      assertEquals(CassandraJournalSchema.tableNames(cqlSession, keyspace), Set.empty)
-    finally kit.shutdownTestKit()
+      withCqlSession(container) { session =>
+        assertEquals(
+          CassandraMigrationTestSupport.tableNames(
+            session,
+            CassandraJournalContract.CanonicalKeyspace
+          ),
+          Set.empty
+        )
+      }
+    }
+  }
+
+  test("production runtime rejects structurally incompatible canonical journal schema") {
+    withCassandraContainer { container =>
+      withCqlSession(container) { session =>
+        CassandraMigrationTestSupport.applyMigration(session)
+        val _ = session.execute("ALTER TABLE pekko.messages DROP tags")
+      }
+
+      val result =
+        Await.result(PaymentRuntime.start(testContainerOverrides(container), 10.seconds), 20.seconds)
+
+      assert(result.left.exists {
+        case error: CassandraPersistenceStartupError.IncompatibleJournalSchema =>
+          error.table == "messages" && error.details.contains("missing column tags")
+        case _ => false
+      })
+    }
   }
 
   test("journal write failure produces no false Accepted reply") {
-    val keyspace = uniqueKeyspace("writefail")
-    cqlSession.execute(
-      s"CREATE KEYSPACE IF NOT EXISTS $keyspace WITH replication = {'class': 'NetworkTopologyStrategy', '${cassandra.getLocalDatacenter}': 1}"
-    )
-    val payment = samplePayment()
-    val kit = actorTestKit(cassandraJournalConfig(keyspace))
-    try
-      val entity = spawn(kit, payment.paymentId)
-      val replyProbe = kit.createTestProbe[PaymentEntity.Reply]()
-      val deathProbe = kit.createTestProbe[Nothing]()
+    withCassandraContainer { container =>
+      withCqlSession(container)(createCanonicalKeyspace(_, container))
+      val payment = samplePayment()
+      val kit = actorTestKit(productionCassandraConfig(container))
+      try
+        val entity = spawn(kit, payment.paymentId)
+        val replyProbe = kit.createTestProbe[PaymentEntity.Reply]()
+        val deathProbe = kit.createTestProbe[Nothing]()
 
-      entity ! PaymentEntity.Execute(createCommand(payment), replyProbe.ref)
+        entity ! PaymentEntity.Execute(createCommand(payment), replyProbe.ref)
 
-      replyProbe.expectNoMessage(1.second)
-      deathProbe.expectTerminated(entity, 15.seconds)
-      assertEquals(CassandraJournalSchema.tableNames(cqlSession, keyspace), Set.empty)
-    finally kit.shutdownTestKit()
+        replyProbe.expectNoMessage(1.second)
+        deathProbe.expectTerminated(entity, 15.seconds)
+        withCqlSession(container) { session =>
+          assertEquals(
+            CassandraMigrationTestSupport.tableNames(
+              session,
+              CassandraJournalContract.CanonicalKeyspace
+            ),
+            Set.empty
+          )
+        }
+      finally kit.shutdownTestKit()
+    }
   }
 
-  private def actorTestKit(config: Config = cassandraJournalConfig()): ActorTestKit =
+  test("Cassandra outage after successful write produces no false Accepted and preserves journal") {
+    val payment = samplePayment()
+    val kit = actorTestKit()
+    val successfulState =
+      try
+        val entity = spawn(kit, payment.paymentId)
+        executeFlow(kit, entity, authorizedCommands(payment, "auth-before-outage"))
+      finally kit.shutdownTestKit()
+
+    val rowCountBeforeOutage = journalRows(payment.paymentId).size
+
+    val outageKit = actorTestKit()
+    try
+      val entity = spawn(outageKit, payment.paymentId)
+      val replyProbe = outageKit.createTestProbe[PaymentEntity.Reply]()
+      val deathProbe = outageKit.createTestProbe[Nothing]()
+
+      cassandra.getDockerClient.pauseContainerCmd(cassandra.getContainerId).exec()
+      try
+        entity ! PaymentEntity.Execute(
+          PaymentCommand.CapturePayment(operation("capture-during-outage"), now),
+          replyProbe.ref
+        )
+
+        replyProbe.expectNoMessage(2.seconds)
+        deathProbe.expectTerminated(entity, 20.seconds)
+      finally
+        val _ = cassandra.getDockerClient.unpauseContainerCmd(cassandra.getContainerId).exec()
+    finally outageKit.shutdownTestKit()
+
+    val recoveryKit = actorTestKit()
+    try
+      assertEquals(journalRows(payment.paymentId).size, rowCountBeforeOutage)
+      val recovered = spawn(recoveryKit, payment.paymentId)
+
+      execute(recoveryKit, recovered, createCommand(payment)) match
+        case rejected: PaymentEntity.Rejected =>
+          assertEquals(rejected.error, PaymentError.PaymentAlreadyCreated)
+          assertEquals(rejected.state, successfulState)
+        case other => fail(s"Expected duplicate create rejection after outage recovery, got $other")
+      assertEquals(journalRows(payment.paymentId).size, rowCountBeforeOutage)
+    finally recoveryKit.shutdownTestKit()
+  }
+
+  private def actorTestKit(config: Config = productionCassandraConfig()): ActorTestKit =
     ActorTestKit(s"PaymentEntityCassandraPersistenceSuite-${UUID.randomUUID()}", config)
 
   private def spawn(
@@ -331,97 +408,61 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
     }
 
   private def journalRows(paymentId: PaymentId): List[Row] =
-    cqlSession
-      .execute(
-        s"SELECT persistence_id, sequence_nr, ser_id, ser_manifest FROM ${CassandraJournalSchema.Keyspace}.messages"
-      )
-      .all()
-      .asScala
-      .filter(_.getString("persistence_id") == PaymentEntity.persistenceId(paymentId))
-      .toList
+    List(0L, 1L)
+      .flatMap { partition =>
+        cqlSession
+          .execute(
+            s"SELECT persistence_id, sequence_nr, ser_id, ser_manifest FROM ${CassandraJournalSchema.Keyspace}.messages WHERE persistence_id = ? AND partition_nr = ?",
+            PaymentEntity.persistenceId(paymentId),
+            Long.box(partition)
+          )
+          .all()
+          .asScala
+          .toList
+      }
       .sortBy(_.getLong("sequence_nr"))
 
-  private def cassandraJournalConfig(
-      keyspace: String = CassandraJournalSchema.Keyspace
-  ): Config =
-    ConfigFactory
-      .parseString(s"""
-        pekko.actor {
-          allow-java-serialization = off
-          serializers.payment-event = "${classOf[PaymentEventSerializer].getName}"
-          serialization-bindings."com.paymentprocessing.domain.payment.PaymentEvent" = payment-event
-        }
+  private def productionCassandraConfig(container: CassandraContainer = cassandra): Config =
+    ProductionRuntimeConfig
+      .load(testContainerOverrides(container))
+      .fold(error => fail(error.message), identity)
 
-        pekko.persistence {
-          journal.plugin = "pekko.persistence.cassandra.journal"
+  private def testContainerOverrides(container: CassandraContainer = cassandra): Config =
+    ConfigFactory.parseString(s"""
+      payment.application.environment = "test"
+      payment.cassandra.host = "${container.getHost}"
+      payment.cassandra.port = ${container.getMappedPort(9042)}
+      payment.cassandra.local-datacenter = "${container.getLocalDatacenter}"
+    """)
 
-          cassandra {
-            coordinated-shutdown-on-error = on
+  private def unavailableCassandraOverrides(): Config =
+    ConfigFactory.parseString("""
+      payment.application.environment = "test"
+      payment.cassandra.host = "127.0.0.1"
+      payment.cassandra.port = 1
+      payment.cassandra.local-datacenter = "datacenter1"
+    """)
 
-            journal {
-              keyspace = "$keyspace"
-              keyspace-autocreate = false
-              tables-autocreate = false
-              target-partition-size = 500000
-              support-deletes = off
-            }
-          }
-        }
+  private def withCassandraContainer[A](run: CassandraContainer => A): A =
+    val container = new CassandraContainer("cassandra:5.0.8")
+    container.start()
+    try run(container)
+    finally container.stop()
 
-        datastax-java-driver {
-          basic.contact-points = ["${cassandra.getHost}:${cassandra.getMappedPort(9042)}"]
-          basic.load-balancing-policy.local-datacenter = "${cassandra.getLocalDatacenter}"
-          advanced.reconnect-on-init = true
+  private def withCqlSession[A](container: CassandraContainer)(run: CqlSession => A): A =
+    val session =
+      CqlSession
+        .builder()
+        .addContactPoint(container.getContactPoint)
+        .withLocalDatacenter(container.getLocalDatacenter)
+        .build()
+    try run(session)
+    finally session.close()
 
-          profiles.pekko-persistence-cassandra-profile.basic.request {
-            consistency = QUORUM
-            default-idempotence = true
-            timeout = 5 seconds
-          }
-        }
-      """)
-      .withFallback(ConfigFactory.load())
-      .resolve()
-
-  private def unavailableCassandraConfig(): Config =
-    ConfigFactory
-      .parseString(s"""
-        pekko.actor {
-          allow-java-serialization = off
-          serializers.payment-event = "${classOf[PaymentEventSerializer].getName}"
-          serialization-bindings."com.paymentprocessing.domain.payment.PaymentEvent" = payment-event
-        }
-
-        pekko.persistence {
-          journal.plugin = "pekko.persistence.cassandra.journal"
-
-          cassandra {
-            coordinated-shutdown-on-error = on
-
-            journal {
-              keyspace = "${CassandraJournalSchema.Keyspace}"
-              keyspace-autocreate = false
-              tables-autocreate = false
-              target-partition-size = 500000
-              support-deletes = off
-            }
-          }
-        }
-
-        datastax-java-driver {
-          basic.contact-points = ["127.0.0.1:1"]
-          basic.load-balancing-policy.local-datacenter = "${cassandra.getLocalDatacenter}"
-          advanced.reconnect-on-init = true
-
-          profiles.pekko-persistence-cassandra-profile.basic.request {
-            consistency = QUORUM
-            default-idempotence = true
-            timeout = 500 millis
-          }
-        }
-      """)
-      .withFallback(ConfigFactory.load())
-      .resolve()
+  private def createCanonicalKeyspace(session: CqlSession, container: CassandraContainer): Unit =
+    val _ = session.execute(
+      s"CREATE KEYSPACE IF NOT EXISTS ${CassandraJournalContract.CanonicalKeyspace} WITH replication = {'class': 'NetworkTopologyStrategy', '${container.getLocalDatacenter}': 1}"
+    )
 
   private def capturedCommands(
       payment: Payment,
@@ -469,6 +510,3 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
 
   private def money(value: String): Money =
     Money.from(BigDecimal(value), Currency.PLN).fold(error => fail(error.toString), identity)
-
-  private def uniqueKeyspace(prefix: String): String =
-    s"p4_${prefix.take(8)}_${UUID.randomUUID().toString.replace("-", "").take(16)}"

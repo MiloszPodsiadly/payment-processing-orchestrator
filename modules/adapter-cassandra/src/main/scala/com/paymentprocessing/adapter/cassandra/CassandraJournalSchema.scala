@@ -1,13 +1,10 @@
 package com.paymentprocessing.adapter.cassandra
 
-import com.datastax.oss.driver.api.core.CqlSession
-
 import java.nio.charset.StandardCharsets
-import scala.jdk.CollectionConverters._
 import scala.util.Using
 
 object CassandraJournalSchema:
-  val Keyspace: String = "pekko"
+  val Keyspace: String = CassandraJournalContract.CanonicalKeyspace
   val MigrationResource: String = "db/cassandra/migrations/V001__pekko_persistence_journal.cql"
 
   val RequiredTables: Set[String] =
@@ -20,23 +17,79 @@ object CassandraJournalSchema:
       "all_persistence_ids"
     )
 
-  val RequiredMessagesColumns: Set[String] =
-    Set(
-      "persistence_id",
-      "partition_nr",
-      "sequence_nr",
-      "timestamp",
-      "timebucket",
-      "writer_uuid",
-      "ser_id",
-      "ser_manifest",
-      "event_manifest",
-      "event",
-      "meta_ser_id",
-      "meta_ser_manifest",
-      "meta",
-      "tags"
+  val RequiredTablesSchema: Map[String, TableSchema] =
+    Map(
+      "messages" -> TableSchema(
+        "messages",
+        Set(
+          ColumnSchema("persistence_id", "text", ColumnKind.PartitionKey, 0),
+          ColumnSchema("partition_nr", "bigint", ColumnKind.PartitionKey, 1),
+          ColumnSchema("sequence_nr", "bigint", ColumnKind.Clustering, 0),
+          ColumnSchema("timestamp", "timeuuid", ColumnKind.Clustering, 1),
+          ColumnSchema("timebucket", "text", ColumnKind.Regular, -1),
+          ColumnSchema("writer_uuid", "text", ColumnKind.Regular, -1),
+          ColumnSchema("ser_id", "int", ColumnKind.Regular, -1),
+          ColumnSchema("ser_manifest", "text", ColumnKind.Regular, -1),
+          ColumnSchema("event_manifest", "text", ColumnKind.Regular, -1),
+          ColumnSchema("event", "blob", ColumnKind.Regular, -1),
+          ColumnSchema("meta_ser_id", "int", ColumnKind.Regular, -1),
+          ColumnSchema("meta_ser_manifest", "text", ColumnKind.Regular, -1),
+          ColumnSchema("meta", "blob", ColumnKind.Regular, -1),
+          ColumnSchema("tags", "set<text>", ColumnKind.Regular, -1)
+        )
+      ),
+      "tag_views" -> TableSchema(
+        "tag_views",
+        Set(
+          ColumnSchema("tag_name", "text", ColumnKind.PartitionKey, 0),
+          ColumnSchema("timebucket", "bigint", ColumnKind.PartitionKey, 1),
+          ColumnSchema("timestamp", "timeuuid", ColumnKind.Clustering, 0),
+          ColumnSchema("persistence_id", "text", ColumnKind.Clustering, 1),
+          ColumnSchema("tag_pid_sequence_nr", "bigint", ColumnKind.Clustering, 2),
+          ColumnSchema("sequence_nr", "bigint", ColumnKind.Regular, -1),
+          ColumnSchema("writer_uuid", "text", ColumnKind.Regular, -1),
+          ColumnSchema("ser_id", "int", ColumnKind.Regular, -1),
+          ColumnSchema("ser_manifest", "text", ColumnKind.Regular, -1),
+          ColumnSchema("event_manifest", "text", ColumnKind.Regular, -1),
+          ColumnSchema("event", "blob", ColumnKind.Regular, -1),
+          ColumnSchema("meta_ser_id", "int", ColumnKind.Regular, -1),
+          ColumnSchema("meta_ser_manifest", "text", ColumnKind.Regular, -1),
+          ColumnSchema("meta", "blob", ColumnKind.Regular, -1)
+        )
+      ),
+      "tag_write_progress" -> TableSchema(
+        "tag_write_progress",
+        Set(
+          ColumnSchema("persistence_id", "text", ColumnKind.PartitionKey, 0),
+          ColumnSchema("tag", "text", ColumnKind.Clustering, 0),
+          ColumnSchema("sequence_nr", "bigint", ColumnKind.Regular, -1),
+          ColumnSchema("tag_pid_sequence_nr", "bigint", ColumnKind.Regular, -1),
+          ColumnSchema("offset", "timeuuid", ColumnKind.Regular, -1)
+        )
+      ),
+      "tag_scanning" -> TableSchema(
+        "tag_scanning",
+        Set(
+          ColumnSchema("persistence_id", "text", ColumnKind.PartitionKey, 0),
+          ColumnSchema("sequence_nr", "bigint", ColumnKind.Regular, -1)
+        )
+      ),
+      "metadata" -> TableSchema(
+        "metadata",
+        Set(
+          ColumnSchema("persistence_id", "text", ColumnKind.PartitionKey, 0),
+          ColumnSchema("deleted_to", "bigint", ColumnKind.Regular, -1),
+          ColumnSchema("properties", "map<text,text>", ColumnKind.Regular, -1)
+        )
+      ),
+      "all_persistence_ids" -> TableSchema(
+        "all_persistence_ids",
+        Set(ColumnSchema("persistence_id", "text", ColumnKind.PartitionKey, 0))
+      )
     )
+
+  val RequiredMessagesColumns: Set[String] =
+    RequiredTablesSchema("messages").columns.map(_.name)
 
   def migrationCql: String =
     val stream =
@@ -49,37 +102,16 @@ object CassandraJournalSchema:
       String(source.readAllBytes(), StandardCharsets.UTF_8)
     }
 
-  def migrationStatements: List[String] =
-    migrationCql
-      .split(";")
-      .iterator
-      .map(_.trim)
-      .filter(_.nonEmpty)
-      .map(statement => s"$statement;")
-      .toList
+final case class TableSchema(tableName: String, columns: Set[ColumnSchema])
 
-  def applyMigration(session: CqlSession): Unit =
-    migrationStatements.foreach(session.execute)
+final case class ColumnSchema(
+    name: String,
+    cqlType: String,
+    kind: ColumnKind,
+    position: Int
+)
 
-  def tableNames(session: CqlSession, keyspace: String = Keyspace): Set[String] =
-    session
-      .execute(
-        "SELECT table_name FROM system_schema.tables WHERE keyspace_name = ?",
-        keyspace
-      )
-      .all()
-      .asScala
-      .map(_.getString("table_name"))
-      .toSet
-
-  def messagesColumns(session: CqlSession, keyspace: String = Keyspace): Set[String] =
-    session
-      .execute(
-        "SELECT column_name FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?",
-        keyspace,
-        "messages"
-      )
-      .all()
-      .asScala
-      .map(_.getString("column_name"))
-      .toSet
+enum ColumnKind(val systemSchemaValue: String):
+  case PartitionKey extends ColumnKind("partition_key")
+  case Clustering extends ColumnKind("clustering")
+  case Regular extends ColumnKind("regular")

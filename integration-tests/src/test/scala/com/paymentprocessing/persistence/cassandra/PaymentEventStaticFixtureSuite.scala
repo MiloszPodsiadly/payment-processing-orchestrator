@@ -18,6 +18,9 @@ import java.time.Instant
 import java.util.Base64
 import java.util.Properties
 import java.util.UUID
+import scala.compiletime.constValue
+import scala.compiletime.erasedValue
+import scala.deriving.Mirror
 import scala.jdk.CollectionConverters._
 
 final class PaymentEventStaticFixtureSuite extends FunSuite:
@@ -58,6 +61,10 @@ final class PaymentEventStaticFixtureSuite extends FunSuite:
     assertEquals(eventKeys, expectedEvents.keySet)
   }
 
+  test("static fixtures cover every compiler-derived PaymentEvent case") {
+    assertEquals(expectedEvents.keySet, labelsOf[PaymentEvent])
+  }
+
   private def loadFixtures(): Properties =
     val stream = Option(getClass.getClassLoader.getResourceAsStream(fixtureResource))
       .getOrElse(fail(s"Missing fixture resource: $fixtureResource"))
@@ -87,7 +94,21 @@ final class PaymentEventStaticFixtureSuite extends FunSuite:
         operation("auth-fixture-1"),
         occurredAt
       ),
+      "FraudCheckRequested" -> PaymentEvent.FraudCheckRequested(occurredAt),
+      "FraudCheckPassed" -> PaymentEvent.FraudCheckPassed(occurredAt),
+      "FraudCheckRejected" -> PaymentEvent.FraudCheckRejected(occurredAt),
+      "FraudManualReviewRequired" -> PaymentEvent.FraudManualReviewRequired(occurredAt),
+      "FraudManualReviewApproved" -> PaymentEvent.FraudManualReviewApproved(occurredAt),
+      "FraudManualReviewRejected" -> PaymentEvent.FraudManualReviewRejected(occurredAt),
       "PaymentAuthorized" -> PaymentEvent.PaymentAuthorized(
+        operation("auth-fixture-1"),
+        occurredAt
+      ),
+      "PaymentDeclined" -> PaymentEvent.PaymentDeclined(
+        operation("auth-fixture-1"),
+        occurredAt
+      ),
+      "AuthorizationOutcomeUnknown" -> PaymentEvent.AuthorizationOutcomeUnknown(
         operation("auth-fixture-1"),
         occurredAt
       ),
@@ -96,6 +117,10 @@ final class PaymentEventStaticFixtureSuite extends FunSuite:
         occurredAt
       ),
       "PaymentCaptured" -> PaymentEvent.PaymentCaptured(
+        operation("capture-fixture-1"),
+        occurredAt
+      ),
+      "CaptureFailed" -> PaymentEvent.CaptureFailed(
         operation("capture-fixture-1"),
         occurredAt
       ),
@@ -114,8 +139,31 @@ final class PaymentEventStaticFixtureSuite extends FunSuite:
         operation("refund-fixture-1"),
         money("30.00"),
         occurredAt
+      ),
+      "PaymentRefunded" -> PaymentEvent.PaymentRefunded(
+        refundId,
+        operation("refund-fixture-1"),
+        money("30.00"),
+        occurredAt
+      ),
+      "RefundFailed" -> PaymentEvent.RefundFailed(
+        operation("refund-fixture-1"),
+        occurredAt
+      ),
+      "RefundOutcomeUnknown" -> PaymentEvent.RefundOutcomeUnknown(
+        operation("refund-fixture-1"),
+        occurredAt
       )
     )
+
+  private inline def labelsOf[T](using mirror: Mirror.SumOf[T]): Set[String] =
+    labelsFromTuple[mirror.MirroredElemLabels]
+
+  private inline def labelsFromTuple[Labels <: Tuple]: Set[String] =
+    inline erasedValue[Labels] match
+      case _: EmptyTuple => Set.empty
+      case _: (head *: tail) =>
+        Set(constValue[head].asInstanceOf[String]) ++ labelsFromTuple[tail]
 
   private def paymentId: PaymentId =
     PaymentId.from(UUID.fromString("00000000-0000-0000-0000-000000000f01"))
