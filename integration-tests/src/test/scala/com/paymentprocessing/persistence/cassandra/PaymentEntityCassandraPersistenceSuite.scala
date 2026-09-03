@@ -7,6 +7,7 @@ import com.paymentprocessing.adapter.cassandra.CassandraJournalSchema
 import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupError
 import com.paymentprocessing.bootstrap.config.ProductionRuntimeConfig
 import com.paymentprocessing.bootstrap.runtime.PaymentRuntime
+import com.paymentprocessing.bootstrap.runtime.PaymentRuntimeStartupError
 import com.paymentprocessing.domain.identity.CustomerId
 import com.paymentprocessing.domain.identity.MerchantId
 import com.paymentprocessing.domain.identity.PaymentId
@@ -26,6 +27,9 @@ import com.typesafe.config.ConfigFactory
 import munit.FunSuite
 import org.apache.pekko.actor.testkit.typed.scaladsl.ActorTestKit
 import org.apache.pekko.actor.typed.ActorRef
+import org.apache.pekko.actor.typed.Scheduler
+import org.apache.pekko.actor.typed.scaladsl.AskPattern._
+import org.apache.pekko.util.Timeout
 import org.testcontainers.cassandra.CassandraContainer
 
 import java.time.Instant
@@ -88,6 +92,31 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
           val _ = Await.result(runtime.system.whenTerminated, 10.seconds)
       case Left(error) =>
         fail(s"Expected production runtime readiness, got ${error.message}")
+  }
+
+  test("PaymentRuntime restart recovers durable PaymentEntity state from Cassandra") {
+    val payment = samplePayment()
+    val commands =
+      capturedCommands(payment, authOperation = "auth-runtime", captureOperation = "capture-runtime")
+    val runtimeOne = startRuntime()
+    val stateBeforeShutdown =
+      try
+        val entity = spawn(runtimeOne, payment.paymentId)
+        executeFlow(runtimeOne, entity, commands)
+      finally stopRuntime(runtimeOne)
+    val rowCountAfterShutdown = journalRows(payment.paymentId).size
+
+    val runtimeTwo = startRuntime()
+    try
+      val recovered = spawn(runtimeTwo, payment.paymentId)
+
+      execute(runtimeTwo, recovered, createCommand(payment)) match
+        case rejected: PaymentEntity.Rejected =>
+          assertEquals(rejected.error, PaymentError.PaymentAlreadyCreated)
+          assertEquals(rejected.state, stateBeforeShutdown)
+        case other => fail(s"Expected duplicate create rejection after runtime restart, got $other")
+      assertEquals(journalRows(payment.paymentId).size, rowCountAfterShutdown)
+    finally stopRuntime(runtimeTwo)
   }
 
   test("actor system one persists payment state and actor system two recovers it exactly") {
@@ -240,76 +269,127 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
     val result =
       Await.result(PaymentRuntime.start(unavailableCassandraOverrides(), 2.seconds), 10.seconds)
 
-    assert(result.left.exists {
+    assert(cassandraError(result) match
       case _: CassandraPersistenceStartupError.CassandraUnavailable => true
       case _ => false
-    })
+    )
   }
 
   test("production runtime reports missing canonical keyspace and does not autocreate schema") {
-    withCassandraContainer { container =>
+    withAlteredSharedSchema { session =>
+      val _ = session.execute(s"DROP KEYSPACE IF EXISTS ${CassandraJournalContract.CanonicalKeyspace}")
       val result =
-        Await.result(PaymentRuntime.start(testContainerOverrides(container), 10.seconds), 20.seconds)
+        Await.result(PaymentRuntime.start(testContainerOverrides(), 10.seconds), 20.seconds)
 
       assertEquals(
-        result.left.map(_.message),
-        Left(s"Cassandra keyspace '${CassandraJournalContract.CanonicalKeyspace}' is missing")
+        cassandraError(result).message,
+        s"Cassandra keyspace '${CassandraJournalContract.CanonicalKeyspace}' is missing"
       )
-      withCqlSession(container) { session =>
-        assert(
-          !CassandraMigrationTestSupport
-            .tableNames(session, CassandraJournalContract.CanonicalKeyspace)
-            .contains("messages")
-        )
-      }
+      assert(
+        !CassandraMigrationTestSupport
+          .tableNames(session, CassandraJournalContract.CanonicalKeyspace)
+          .contains("messages")
+      )
     }
   }
 
   test("production runtime reports missing canonical journal tables and leaves autocreate disabled") {
-    withCassandraContainer { container =>
-      withCqlSession(container) { session =>
-        createCanonicalKeyspace(session, container)
-      }
+    withAlteredSharedSchema { session =>
+      val _ = session.execute(s"DROP KEYSPACE IF EXISTS ${CassandraJournalContract.CanonicalKeyspace}")
+      createCanonicalKeyspace(session, cassandra)
 
       val result =
-        Await.result(PaymentRuntime.start(testContainerOverrides(container), 10.seconds), 20.seconds)
+        Await.result(PaymentRuntime.start(testContainerOverrides(), 10.seconds), 20.seconds)
 
-      assert(result.left.exists(_.isInstanceOf[CassandraPersistenceStartupError.MissingJournalTable]))
-      withCqlSession(container) { session =>
-        assertEquals(
-          CassandraMigrationTestSupport.tableNames(
-            session,
-            CassandraJournalContract.CanonicalKeyspace
-          ),
-          Set.empty
-        )
-      }
+      assert(cassandraError(result).isInstanceOf[CassandraPersistenceStartupError.MissingJournalTable])
+      assertEquals(
+        CassandraMigrationTestSupport.tableNames(
+          session,
+          CassandraJournalContract.CanonicalKeyspace
+        ),
+        Set.empty
+      )
     }
   }
 
   test("production runtime rejects structurally incompatible canonical journal schema") {
-    withCassandraContainer { container =>
-      withCqlSession(container) { session =>
-        CassandraMigrationTestSupport.applyMigration(session)
-        val _ = session.execute("ALTER TABLE pekko.messages DROP tags")
-      }
-
+    withMalformedSharedSchema { session =>
+      val _ = session.execute("ALTER TABLE pekko.messages DROP tags")
       val result =
-        Await.result(PaymentRuntime.start(testContainerOverrides(container), 10.seconds), 20.seconds)
+        Await.result(PaymentRuntime.start(testContainerOverrides(), 10.seconds), 20.seconds)
 
-      assert(result.left.exists {
+      assert(cassandraError(result) match
         case error: CassandraPersistenceStartupError.IncompatibleJournalSchema =>
           error.table == "messages" && error.details.contains("missing column tags")
         case _ => false
-      })
+      )
+    }
+  }
+
+  test("production runtime rejects messages schema with wrong event CQL type") {
+    withMalformedSharedSchema { session =>
+      replaceMessagesTable(session)(_.replace("event blob,", "event text,"))
+      val result =
+        Await.result(PaymentRuntime.start(testContainerOverrides(), 10.seconds), 20.seconds)
+
+      cassandraError(result) match
+        case error: CassandraPersistenceStartupError.IncompatibleJournalSchema =>
+          assertEquals(error.table, "messages")
+          assert(error.details.contains("event type expected blob got text"))
+        case other => fail(s"Expected incompatible messages schema, got ${other.message}")
+    }
+  }
+
+  test("production runtime rejects messages schema with wrong partition key shape") {
+    withMalformedSharedSchema { session =>
+      replaceMessagesTable(session)(
+        _.replace(
+          "PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, timestamp))",
+          "PRIMARY KEY (persistence_id, partition_nr, sequence_nr, timestamp))"
+        )
+      )
+      val result =
+        Await.result(PaymentRuntime.start(testContainerOverrides(), 10.seconds), 20.seconds)
+
+      cassandraError(result) match
+        case error: CassandraPersistenceStartupError.IncompatibleJournalSchema =>
+          assertEquals(error.table, "messages")
+          assert(error.details.contains("partition_nr kind expected partition_key got clustering"))
+        case other => fail(s"Expected incompatible messages schema, got ${other.message}")
+    }
+  }
+
+  test("production runtime rejects messages schema with wrong clustering key order") {
+    withMalformedSharedSchema { session =>
+      replaceMessagesTable(session) { statement =>
+        statement
+          .replace(
+            "PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, timestamp))",
+            "PRIMARY KEY ((persistence_id, partition_nr), timestamp, sequence_nr))"
+          )
+          .replace(
+            "WITH gc_grace_seconds = 864000",
+            "WITH CLUSTERING ORDER BY (timestamp ASC, sequence_nr ASC)\n  AND gc_grace_seconds = 864000"
+          )
+      }
+      val result =
+        Await.result(PaymentRuntime.start(testContainerOverrides(), 10.seconds), 20.seconds)
+
+      cassandraError(result) match
+        case error: CassandraPersistenceStartupError.IncompatibleJournalSchema =>
+          assertEquals(error.table, "messages")
+          assert(error.details.contains("sequence_nr position expected 0 got 1"))
+          assert(error.details.contains("timestamp position expected 1 got 0"))
+        case other => fail(s"Expected incompatible messages schema, got ${other.message}")
     }
   }
 
   test("journal write failure produces no false Accepted reply") {
-    withCassandraContainer { container =>
-      withCqlSession(container)(createCanonicalKeyspace(_, container))
+    withAlteredSharedSchema { session =>
+      val _ = session.execute(s"DROP KEYSPACE IF EXISTS ${CassandraJournalContract.CanonicalKeyspace}")
+      createCanonicalKeyspace(session, cassandra)
       val payment = samplePayment()
-      val kit = actorTestKit(productionCassandraConfig(container))
+      val kit = actorTestKit(productionCassandraConfig())
       try
         val entity = spawn(kit, payment.paymentId)
         val replyProbe = kit.createTestProbe[PaymentEntity.Reply]()
@@ -319,15 +399,13 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
 
         replyProbe.expectNoMessage(1.second)
         deathProbe.expectTerminated(entity, 15.seconds)
-        withCqlSession(container) { session =>
-          assertEquals(
-            CassandraMigrationTestSupport.tableNames(
-              session,
-              CassandraJournalContract.CanonicalKeyspace
-            ),
-            Set.empty
-          )
-        }
+        assertEquals(
+          CassandraMigrationTestSupport.tableNames(
+            session,
+            CassandraJournalContract.CanonicalKeyspace
+          ),
+          Set.empty
+        )
       finally kit.shutdownTestKit()
     }
   }
@@ -349,7 +427,14 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
       val replyProbe = outageKit.createTestProbe[PaymentEntity.Reply]()
       val deathProbe = outageKit.createTestProbe[Nothing]()
 
-      cassandra.getDockerClient.pauseContainerCmd(cassandra.getContainerId).exec()
+      execute(outageKit, entity, createCommand(payment)) match
+        case rejected: PaymentEntity.Rejected =>
+          assertEquals(rejected.error, PaymentError.PaymentAlreadyCreated)
+          assertEquals(rejected.state, successfulState)
+        case other => fail(s"Expected confirmed recovery before outage, got $other")
+      assertEquals(journalRows(payment.paymentId).size, rowCountBeforeOutage)
+
+      setCassandraBinaryTransport(enabled = false)
       try
         entity ! PaymentEntity.Execute(
           PaymentCommand.CapturePayment(operation("capture-during-outage"), now),
@@ -358,13 +443,12 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
 
         replyProbe.expectNoMessage(2.seconds)
         deathProbe.expectTerminated(entity, 20.seconds)
-      finally
-        val _ = cassandra.getDockerClient.unpauseContainerCmd(cassandra.getContainerId).exec()
+      finally setCassandraBinaryTransport(enabled = true)
     finally outageKit.shutdownTestKit()
 
     val recoveryKit = actorTestKit()
     try
-      assertEquals(journalRows(payment.paymentId).size, rowCountBeforeOutage)
+      assertEquals(journalRows(cassandra, payment.paymentId).size, rowCountBeforeOutage)
       val recovered = spawn(recoveryKit, payment.paymentId)
 
       execute(recoveryKit, recovered, createCommand(payment)) match
@@ -372,9 +456,18 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
           assertEquals(rejected.error, PaymentError.PaymentAlreadyCreated)
           assertEquals(rejected.state, successfulState)
         case other => fail(s"Expected duplicate create rejection after outage recovery, got $other")
-      assertEquals(journalRows(payment.paymentId).size, rowCountBeforeOutage)
+      assertEquals(journalRows(cassandra, payment.paymentId).size, rowCountBeforeOutage)
     finally recoveryKit.shutdownTestKit()
   }
+
+  private def startRuntime(container: CassandraContainer = cassandra): PaymentRuntime.ReadyRuntime =
+    Await.result(PaymentRuntime.start(testContainerOverrides(container), 15.seconds), 25.seconds) match
+      case Right(runtime) => runtime
+      case Left(error) => fail(s"Expected ready runtime, got ${error.message}")
+
+  private def stopRuntime(runtime: PaymentRuntime.ReadyRuntime): Unit =
+    runtime.system.terminate()
+    val _ = Await.result(runtime.system.whenTerminated, 10.seconds)
 
   private def actorTestKit(config: Config = productionCassandraConfig()): ActorTestKit =
     ActorTestKit(s"PaymentEntityCassandraPersistenceSuite-${UUID.randomUUID()}", config)
@@ -385,6 +478,12 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
   ): ActorRef[PaymentEntity.Command] =
     kit.spawn(PaymentEntity(paymentId), s"payment-${UUID.randomUUID()}")
 
+  private def spawn(
+      runtime: PaymentRuntime.ReadyRuntime,
+      paymentId: PaymentId
+  ): ActorRef[PaymentEntity.Command] =
+    runtime.system.systemActorOf(PaymentEntity(paymentId), s"payment-${UUID.randomUUID()}")
+
   private def execute(
       kit: ActorTestKit,
       entity: ActorRef[PaymentEntity.Command],
@@ -393,6 +492,19 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
     val probe = kit.createTestProbe[PaymentEntity.Reply]()
     entity ! PaymentEntity.Execute(command, probe.ref)
     probe.receiveMessage(10.seconds)
+
+  private def execute(
+      runtime: PaymentRuntime.ReadyRuntime,
+      entity: ActorRef[PaymentEntity.Command],
+      command: PaymentCommand
+  ): PaymentEntity.Reply =
+    given Timeout = Timeout(10.seconds)
+    given Scheduler = runtime.system.scheduler
+
+    Await.result(
+      entity.ask[PaymentEntity.Reply](replyTo => PaymentEntity.Execute(command, replyTo)),
+      10.seconds
+    )
 
   private def executeFlow(
       kit: ActorTestKit,
@@ -407,10 +519,29 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
         case invalid: PaymentEntity.InvalidEnvelope => fail(s"Unexpected invalid envelope: ${invalid.reason}")
     }
 
+  private def executeFlow(
+      runtime: PaymentRuntime.ReadyRuntime,
+      entity: ActorRef[PaymentEntity.Command],
+      commands: List[PaymentCommand]
+  ): PaymentState =
+    commands.foldLeft(PaymentState.NotCreated) { case (_, command) =>
+      execute(runtime, entity, command) match
+        case accepted: PaymentEntity.Accepted => accepted.state
+        case duplicate: PaymentEntity.DuplicateAccepted => duplicate.state
+        case rejected: PaymentEntity.Rejected => fail(s"Unexpected rejection: ${rejected.error}")
+        case invalid: PaymentEntity.InvalidEnvelope => fail(s"Unexpected invalid envelope: ${invalid.reason}")
+    }
+
   private def journalRows(paymentId: PaymentId): List[Row] =
+    journalRows(cqlSession, paymentId)
+
+  private def journalRows(container: CassandraContainer, paymentId: PaymentId): List[Row] =
+    withCqlSession(container)(journalRows(_, paymentId))
+
+  private def journalRows(session: CqlSession, paymentId: PaymentId): List[Row] =
     List(0L, 1L)
       .flatMap { partition =>
-        cqlSession
+        session
           .execute(
             s"SELECT persistence_id, sequence_nr, ser_id, ser_manifest FROM ${CassandraJournalSchema.Keyspace}.messages WHERE persistence_id = ? AND partition_nr = ?",
             PaymentEntity.persistenceId(paymentId),
@@ -443,12 +574,6 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
       payment.cassandra.local-datacenter = "datacenter1"
     """)
 
-  private def withCassandraContainer[A](run: CassandraContainer => A): A =
-    val container = new CassandraContainer("cassandra:5.0.8")
-    container.start()
-    try run(container)
-    finally container.stop()
-
   private def withCqlSession[A](container: CassandraContainer)(run: CqlSession => A): A =
     val session =
       CqlSession
@@ -463,6 +588,49 @@ final class PaymentEntityCassandraPersistenceSuite extends FunSuite:
     val _ = session.execute(
       s"CREATE KEYSPACE IF NOT EXISTS ${CassandraJournalContract.CanonicalKeyspace} WITH replication = {'class': 'NetworkTopologyStrategy', '${container.getLocalDatacenter}': 1}"
     )
+
+  private def replaceMessagesTable(session: CqlSession)(transform: String => String): Unit =
+    val canonicalMessagesTable =
+      CassandraMigrationTestSupport.migrationStatements
+        .find(_.startsWith("CREATE TABLE IF NOT EXISTS pekko.messages"))
+        .getOrElse(fail("Missing canonical messages table migration statement"))
+
+    val _ = session.execute("DROP TABLE pekko.messages")
+    val _ = session.execute(transform(canonicalMessagesTable))
+
+  private def withMalformedSharedSchema(run: CqlSession => Unit): Unit =
+    try
+      restoreMigratedSchema()
+      run(cqlSession)
+    finally restoreMigratedSchema()
+
+  private def withAlteredSharedSchema(run: CqlSession => Unit): Unit =
+    try run(cqlSession)
+    finally restoreMigratedSchema()
+
+  private def restoreMigratedSchema(): Unit =
+    val _ = cqlSession.execute(s"DROP KEYSPACE IF EXISTS ${CassandraJournalContract.CanonicalKeyspace}")
+    CassandraMigrationTestSupport.applyMigration(cqlSession)
+
+  private def setCassandraBinaryTransport(enabled: Boolean): Unit =
+    val command = if enabled then "enablebinary" else "disablebinary"
+    val result = cassandra.execInContainer("nodetool", command)
+
+    assertEquals(
+      result.getExitCode,
+      0,
+      s"nodetool $command failed: ${result.getStderr}"
+    )
+
+  private def cassandraError(
+      result: Either[PaymentRuntimeStartupError, PaymentRuntime.ReadyRuntime]
+  ): CassandraPersistenceStartupError =
+    result match
+      case Left(PaymentRuntimeStartupError.CassandraPersistenceValidationFailed(error)) => error
+      case Left(error) => fail(s"Expected Cassandra validation failure, got ${error.message}")
+      case Right(runtime) =>
+        try fail("Expected Cassandra validation failure, got ready runtime")
+        finally stopRuntime(runtime)
 
   private def capturedCommands(
       payment: Payment,

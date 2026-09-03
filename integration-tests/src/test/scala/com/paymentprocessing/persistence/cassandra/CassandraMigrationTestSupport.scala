@@ -7,13 +7,18 @@ import scala.jdk.CollectionConverters._
 
 object CassandraMigrationTestSupport:
   def applyMigration(session: CqlSession): Unit =
+    migrationStatements.foreach { statement =>
+      val _ = session.execute(statement)
+    }
+
+  def migrationStatements: List[String] =
     CassandraJournalSchema.migrationCql
       .split(";")
       .iterator
       .map(_.trim)
       .filter(_.nonEmpty)
       .map(statement => s"$statement;")
-      .foreach(session.execute)
+      .toList
 
   def tableNames(session: CqlSession, keyspace: String = CassandraJournalSchema.Keyspace): Set[String] =
     session

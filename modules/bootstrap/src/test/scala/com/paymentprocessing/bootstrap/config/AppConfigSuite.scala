@@ -2,8 +2,13 @@ package com.paymentprocessing.bootstrap.config
 
 import com.paymentprocessing.adapter.cassandra.CassandraJournalContract
 import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupValidator
+import com.paymentprocessing.bootstrap.runtime.PaymentRuntime
+import com.paymentprocessing.bootstrap.runtime.PaymentRuntimeStartupError
 import com.typesafe.config.ConfigFactory
 import munit.FunSuite
+
+import scala.concurrent.Await
+import scala.concurrent.duration.DurationInt
 
 final class AppConfigSuite extends FunSuite:
   test("loads valid test configuration") {
@@ -220,6 +225,23 @@ final class AppConfigSuite extends FunSuite:
 
     assert(loaded.left.exists { case error =>
       error.message.startsWith("Invalid Cassandra persistence configuration:")
+    })
+  }
+
+  test("PaymentRuntime.start reports non-Cassandra runtime config as bootstrap runtime error") {
+    val started =
+      Await.result(
+        PaymentRuntime.start(validConfigWith("payment.http.port = 70000"), 1.second),
+        3.seconds
+      )
+
+    assertEquals(
+      started.left.map(_.message),
+      Left("Invalid runtime configuration: payment.http.port must be between 1 and 65535")
+    )
+    assert(started.left.exists {
+      case _: PaymentRuntimeStartupError.InvalidRuntimeConfiguration => true
+      case _: PaymentRuntimeStartupError.CassandraPersistenceValidationFailed => false
     })
   }
 

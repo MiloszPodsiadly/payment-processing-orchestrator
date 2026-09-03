@@ -3,7 +3,6 @@ package com.paymentprocessing.bootstrap.runtime
 import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupError
 import com.paymentprocessing.adapter.cassandra.CassandraPersistenceStartupValidator
 import com.paymentprocessing.bootstrap.config.AppConfig
-import com.paymentprocessing.bootstrap.config.ConfigError
 import com.paymentprocessing.bootstrap.config.ProductionRuntimeConfig
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
@@ -21,14 +20,18 @@ object PaymentRuntime:
   def start(
       overrides: Config = ConfigFactory.empty(),
       validationTimeout: FiniteDuration = 10.seconds
-  ): Future[Either[CassandraPersistenceStartupError, ReadyRuntime]] =
+  ): Future[Either[PaymentRuntimeStartupError, ReadyRuntime]] =
     ProductionRuntimeConfig.load(overrides) match
       case Left(error) =>
-        Future.successful(Left(toStartupError(error)))
+        Future.successful(
+          Left(PaymentRuntimeStartupError.InvalidRuntimeConfiguration(error.message))
+        )
       case Right(runtimeConfig) =>
         AppConfig.load(runtimeConfig) match
           case Left(error) =>
-            Future.successful(Left(toStartupError(error)))
+            Future.successful(
+              Left(PaymentRuntimeStartupError.InvalidRuntimeConfiguration(error.message))
+            )
           case Right(appConfig) =>
             val system =
               ActorSystem[Nothing](
@@ -45,8 +48,18 @@ object PaymentRuntime:
                   Future.successful(Right(ReadyRuntime(system, appConfig)))
                 case Left(error) =>
                   system.terminate()
-                  system.whenTerminated.map(_ => Left(error))
+                  system.whenTerminated.map(_ =>
+                    Left(PaymentRuntimeStartupError.CassandraPersistenceValidationFailed(error))
+                  )
               }
 
-  private def toStartupError(error: ConfigError): CassandraPersistenceStartupError =
-    CassandraPersistenceStartupError.InvalidCassandraPersistenceConfiguration(error.message)
+sealed trait PaymentRuntimeStartupError:
+  def message: String
+
+object PaymentRuntimeStartupError:
+  final case class InvalidRuntimeConfiguration(details: String) extends PaymentRuntimeStartupError:
+    override def message: String = s"Invalid runtime configuration: $details"
+
+  final case class CassandraPersistenceValidationFailed(error: CassandraPersistenceStartupError)
+      extends PaymentRuntimeStartupError:
+    override def message: String = error.message

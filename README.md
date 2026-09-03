@@ -56,7 +56,7 @@ Phase 4 Cassandra journal persistence integration.
 - Recovery tests cover Created, Pending, Authorized/Captured/Refunded, Unknown, partial refund, corrupt history, journal write failure, and mailbox serialization scenarios.
 - `adapter-cassandra` owns the Cassandra journal schema migration and startup validation.
 - Bootstrap selects `pekko.persistence.cassandra.journal`, disables keyspace/table autocreate, disables deletes, and requires QUORUM requests.
-- Cassandra Testcontainers integration tests cover schema migration, startup validation, cross-ActorSystem recovery, pending/unknown recovery, aggregate isolation, journal row serializer metadata, static v1 serializer fixtures, and missing-schema fail-closed behavior.
+- Cassandra Testcontainers integration tests cover schema migration, startup validation, full `PaymentRuntime` restart recovery, pending/unknown recovery, aggregate isolation, outage-after-recovery write failure, structural schema attacks, journal row serializer metadata, static v1 serializer read compatibility, static v1 writer byte compatibility, and missing-schema fail-closed behavior.
 - Local Cassandra infrastructure and migration execution are defined in `compose.yaml`.
 - CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and Cassandra integration tests.
 - Direct GitHub Actions are pinned to immutable commit SHAs.

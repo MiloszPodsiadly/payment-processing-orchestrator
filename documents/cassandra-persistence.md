@@ -11,7 +11,7 @@ snapshots, sharding, provider side effects, or API idempotency behavior.
 - `adapter-cassandra` owns Pekko Persistence Cassandra dependencies, journal schema
   resources, and startup validation.
 - `bootstrap` selects the Cassandra journal plugin and maps typed payment Cassandra
-  settings into Pekko/DataStax configuration.
+  connectivity settings into Pekko/DataStax configuration.
 - `integration-tests` owns real Cassandra Testcontainers coverage.
 
 `domain` and `application` remain Cassandra-free. `runtime-pekko` also remains
@@ -87,9 +87,10 @@ The Phase 4 runtime settings keep:
 - DataStax `advanced.reconnect-on-init = true`
 - request consistency `QUORUM`
 
-`target-partition-size` is explicitly set to `500000`. Payment event streams are expected
-to be short and payment-specific; this value preserves the plugin default until production
-cardinality and event-size measurements justify a deliberate partitioning change.
+`target-partition-size` is explicitly set to `500000` and startup validation requires that
+exact value. In Phase 4 this is a V1 persisted-journal partitioning contract, not ordinary
+runtime tuning. Changing it for an existing journal requires explicit migration or
+compatibility design and evidence.
 
 Deletes are disabled with `support-deletes = off`. Payment event history is append-only in
 this phase; GDPR/retention workflows are not implemented.
@@ -114,13 +115,18 @@ journal readiness. It checks:
 - keyspace/table autocreate is disabled
 - deletes are disabled
 - reconnect-on-init is enabled
-- target partition size is positive
+- target partition size is exactly `500000`
 - Cassandra is reachable
 - the configured local datacenter matches `system.local`
 - the configured keyspace and required journal tables exist
+- required journal columns exist
+- required column CQL types match the Phase 4 schema contract
+- required partition-key and clustering-key roles match the Phase 4 schema contract
+- required key column positions and clustering order match the Phase 4 schema contract
+- unexpected extra key columns are rejected
 
 Failures are explicit ADTs: unavailable Cassandra, missing keyspace, missing journal table,
-or invalid Cassandra persistence configuration.
+incompatible journal schema, or invalid Cassandra persistence configuration.
 
 ## Local Bootstrap
 
@@ -164,13 +170,24 @@ The Phase 4 integration tests use `cassandra:5.0.8` through Testcontainers and c
 - startup validation success against a migrated Cassandra
 - unavailable Cassandra fail-closed behavior
 - missing keyspace and missing table fail-closed behavior
+- structural schema rejection for missing required columns
+- structural schema rejection for wrong CQL type, wrong partition-key shape, and wrong
+  clustering-key order
 - ActorSystem #1 persistence followed by full termination and ActorSystem #2 recovery
+- full `PaymentRuntime.start` #1 persistence, termination, `PaymentRuntime.start` #2
+  recovery, exact duplicate-create rejection state, and unchanged journal row count
 - pending capture duplicate/mismatch semantics after recovery
 - unknown capture recovery preserving provider operation identity
 - payment aggregate isolation in the shared journal
 - no false `Accepted` reply when the journal schema is missing
+- no false `Accepted` reply when Cassandra outage occurs after recovery has been
+  mechanically confirmed; later recovery restores the exact previous state and journal row
+  count
 - Cassandra journal rows containing the expected serializer id and v1 serializer manifest
 - static v1 serializer fixtures loaded from resources rather than generated at test runtime
+- current serializer V1 reader compatibility with frozen historical fixture bytes
+- current serializer V1 writer compatibility: every frozen event value serializes to the
+  exact frozen fixture bytes while the manifest remains `payment-event-v1`
 
 Persistence TestKit and Cassandra Testcontainers cover different risks. Persistence TestKit
 checks actor persistence semantics quickly without a real database. Cassandra Testcontainers
@@ -184,6 +201,7 @@ validation, and journal-row serializer evidence.
 | Cassandra unavailable at startup | Startup validation returns `CassandraUnavailable`. | Explicit validation error message. | Driver reconnect-on-init is enabled; no custom application retry loop is implemented. |
 | Missing keyspace | Startup validation returns `MissingKeyspace`. | Explicit missing keyspace message. | Runtime does not autocreate schema. |
 | Missing journal table | Startup validation returns `MissingJournalTable`. | Explicit missing table message. | Runtime does not autocreate schema. |
+| Incompatible journal schema | Startup validation returns `IncompatibleJournalSchema`. | Explicit table and column/key mismatch details. | Runtime does not continue against a schema with incompatible CQL types, key roles, or key order. |
 | Journal write failure | `PaymentEntity.Accepted` is not emitted for the failed write. | Actor termination/supervision signal from Pekko Persistence. | No custom command retry is implemented. |
 | Corrupt event history | Recovery fails loudly before command handling fabricates state. | Actor termination/recovery failure. | No automatic repair is implemented. |
 | Serializer incompatibility | Deserialization fails with `NotSerializableException`. | Recovery/test failure identifying serializer incompatibility. | No upcaster exists in Phase 4. |

@@ -22,7 +22,8 @@ Use Apache Pekko Persistence Cassandra as the production journal plugin for
 
 The Cassandra adapter owns the plugin dependency, schema migration resource, and startup
 validation. Bootstrap selects `pekko.persistence.cassandra.journal` and provides
-environment-specific contact point, datacenter, and keyspace settings.
+environment-specific contact point and local datacenter settings. The journal keyspace is
+canonical: `pekko`.
 
 The decision uses Cassandra here because the payment aggregate already has an
 event-sourced, append-oriented persistence model and must recover acknowledged events
@@ -34,7 +35,7 @@ Phase 4 uses:
 - explicit versioned schema migration
 - schema autocreate disabled
 - `QUORUM` request consistency
-- `target-partition-size = 500000`
+- `target-partition-size = 500000` as a compatibility contract
 - journal deletes disabled
 - no snapshot schema
 
@@ -50,7 +51,8 @@ Phase 4 uses:
 ## Failure Semantics
 
 - Cassandra unavailable at startup returns an explicit unavailable validation error.
-- Missing keyspace or table returns an explicit schema validation error.
+- Missing keyspace, missing table, or structurally incompatible table returns an explicit
+  schema validation error.
 - Runtime autocreate remains disabled, so startup cannot silently create schema.
 - A journal write failure must not produce `PaymentEntity.Accepted`.
 - Corrupt history or unreadable serialized bytes fail recovery instead of fabricating state.
@@ -69,10 +71,10 @@ evidence, not a production HA claim.
 
 ## Partition-Size Decision
 
-The configured `target-partition-size` stays at `500000`, the plugin default. Payment
-streams are payment-specific and expected to contain small bounded lifecycles. Changing the
-partitioning policy without production cardinality measurements would be premature and
-hard to reverse safely later.
+The configured `target-partition-size` stays at `500000`, the plugin default, and Phase 4
+startup validation requires that exact value. Once journal data exists, this setting is
+part of the persisted-journal partitioning contract rather than casual runtime tuning.
+Changing it requires explicit migration or compatibility design and evidence.
 
 ## Migration Decision
 
@@ -87,9 +89,10 @@ Snapshots remain out of scope. No snapshot store schema is created by Phase 4.
 ## Testing Evidence
 
 Phase 4 evidence includes Persistence TestKit runtime tests for actor semantics and real
-Cassandra Testcontainers tests for durable backend integration, cross-ActorSystem
-recovery, schema validation, journal row serializer metadata, and static v1 serializer
-fixtures.
+Cassandra Testcontainers tests for durable backend integration, full `PaymentRuntime`
+restart recovery, cross-ActorSystem recovery, deterministic outage-after-recovery write
+failure, structural schema validation attacks, journal row serializer metadata, and static
+v1 serializer read/write compatibility fixtures.
 
 ## Rejected Alternatives
 

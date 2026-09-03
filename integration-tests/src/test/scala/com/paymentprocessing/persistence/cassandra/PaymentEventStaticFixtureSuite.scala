@@ -44,6 +44,15 @@ final class PaymentEventStaticFixtureSuite extends FunSuite:
     }
   }
 
+  test("current v1 writer remains byte-for-byte compatible with frozen fixtures") {
+    val fixtures = loadFixtures()
+
+    expectedEvents.foreach { case (label, event) =>
+      assertEquals(serializer.manifest(event), manifest)
+      assertEquals(serializer.toBinary(event).toSeq, decode(fixtures, label).toSeq)
+    }
+  }
+
   test("static v1 fixture corruption is rejected deterministically") {
     val fixtures = loadFixtures()
     val payload = decode(fixtures, "PaymentCreated").dropRight(1)
