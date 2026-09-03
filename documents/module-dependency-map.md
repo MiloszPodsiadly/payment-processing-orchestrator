@@ -20,7 +20,7 @@ domain
 | `application` | Use-case coordination and ports around the domain. | `domain`, test libraries in test scope. | Tapir, HTTP implementation, Cassandra row models, provider transport DTOs, actor protocol types. |
 | `runtime-pekko` | Typed actors, persistence behavior, recovery, and runtime-owned current-version event serialization. Later sharding remains out of scope until its phase. | `application`, Pekko Typed, Pekko Persistence Typed, test-scope Pekko actor/persistence testkit. | HTTP DTO ownership, Cassandra row ownership, Tapir, Cluster Sharding, Projections, domain redefinition. |
 | `adapter-http-tapir` | HTTP contracts and DTO mapping when API work begins. | `application`, `domain` transitively through application, `security` only when endpoint policies exist. | Payment state authority, direct persistence writes. |
-| `adapter-cassandra` | Cassandra journal/read-model integration when persistence begins. | `application`. | Domain decisions, HTTP contracts, payment invariant ownership. |
+| `adapter-cassandra` | Phase 4 Cassandra journal schema, Pekko Persistence Cassandra dependency, version-alignment dependencies, and startup validation. Read models remain deferred. | `application`, Pekko Connectors Cassandra, Pekko Persistence Cassandra, reviewed Pekko cluster/coordination alignment dependencies. | Domain decisions, HTTP contracts, payment invariant ownership, Tapir, Cluster Sharding, Projections. |
 | `adapter-provider` | Mock and later external provider adapter implementations. | `application`. | Domain concept redefinition, unsafe retry ownership. |
 | `adapter-fraud` | Fraud gateway adapter implementations. | `application`. | Payment lifecycle authority. |
 | `security` | Authentication boundary, permissions, RBAC, and tenant isolation. | `application`. | Client-side authority assumptions, domain event ownership. |
@@ -42,5 +42,6 @@ domain
 - `bootstrap` composes modules and owns typed startup configuration loading.
 - `integration-tests` includes a secondary source-boundary scan that fails if forbidden framework imports appear in `domain` or `application`.
 - Phase 3 extends the runtime boundary checks so `runtime-pekko` may use approved Pekko Typed/Persistence dependencies but remains free of Cassandra, Tapir, Cluster Sharding, and Projections.
+- Phase 4 extends the adapter boundary checks so `adapter-cassandra` may use approved Pekko Cassandra dependencies while staying free of Tapir, Cluster Sharding, and Projections.
 - One active `PaymentEntity` per `PersistenceId` is a hard runtime invariant. Phase 3 documents this requirement but does not implement distributed enforcement; Cluster Sharding remains deferred.
 - The source-boundary scan has fixture tests proving it fails for missing expected directories and injected forbidden imports.

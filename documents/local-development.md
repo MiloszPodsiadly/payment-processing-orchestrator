@@ -14,7 +14,7 @@ sbt test
 sbt "scalafmtSbtCheck; scalafmtCheckAll"
 sbt "scalafixAll --check"
 sbt verifyArchitecture
-sbt integrationTests/Test/compile
+sbt integrationTests/Test/testFull
 ```
 
 ## IntelliJ / BSP
@@ -33,6 +33,29 @@ After regenerating BSP, reload the sbt project in IntelliJ. The generated `.bsp/
 directory is local-only and intentionally ignored by Git.
 
 ## Cassandra
+
+Start Cassandra and run the journal migration:
+
+```powershell
+docker compose up -d cassandra cassandra-migrate
+```
+
+Check container health and migration logs:
+
+```powershell
+docker compose ps
+docker compose logs cassandra
+docker compose logs cassandra-migrate
+```
+
+Run the real Cassandra integration tests:
+
+```powershell
+sbt integrationTests/Test/testFull
+```
+
+The migration resource is committed under
+`modules/adapter-cassandra/src/main/resources/db/cassandra/migrations/`.
 
 ## Environment Variables
 

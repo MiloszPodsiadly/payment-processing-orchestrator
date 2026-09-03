@@ -60,7 +60,10 @@ lazy val adapterCassandra = project
   .in(file("modules/adapter-cassandra"))
   .dependsOn(application)
   .settings(commonSettings)
-  .settings(name := "payment-adapter-cassandra")
+  .settings(
+    name := "payment-adapter-cassandra",
+    libraryDependencies ++= cassandraAdapterDependencies
+  )
 
 lazy val adapterProvider = project
   .in(file("modules/adapter-provider"))
@@ -108,6 +111,7 @@ lazy val integrationTests = project
   .settings(commonSettings)
   .settings(
     name := "payment-integration-tests",
+    Test / parallelExecution := false,
     libraryDependencies ++= integrationTestDependencies
   )
 
@@ -170,8 +174,19 @@ ThisBuild / verifyArchitecture := Def.uncached {
       DependencyCoordinate("org.scala-lang", "scala3-library")
     )
 
+  val approvedAdapterCassandraDirectProductionDependencies =
+    Set(
+      DependencyCoordinate("org.apache.pekko", "pekko-cluster"),
+      DependencyCoordinate("org.apache.pekko", "pekko-cluster-tools"),
+      DependencyCoordinate("org.apache.pekko", "pekko-coordination"),
+      DependencyCoordinate("org.apache.pekko", "pekko-connectors-cassandra"),
+      DependencyCoordinate("org.apache.pekko", "pekko-persistence-cassandra"),
+      DependencyCoordinate("org.scala-lang", "scala3-library")
+    )
+
   verifyFixtures(approvedDomainCompileDependencies)
   verifyRuntimeDirectFixtures(approvedRuntimePekkoDirectProductionDependencies)
+  verifyAdapterCassandraDirectFixtures(approvedAdapterCassandraDirectProductionDependencies)
 
   val approvalViolations =
     unapprovedDependencyViolations(
@@ -186,6 +201,10 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "runtime-pekko",
       directProductionDependencyCoordinates((runtimePekko / libraryDependencies).value),
       approvedRuntimePekkoDirectProductionDependencies
+    ) ++ unapprovedDirectDependencyViolations(
+      "adapter-cassandra",
+      directProductionDependencyCoordinates((adapterCassandra / libraryDependencies).value),
+      approvedAdapterCassandraDirectProductionDependencies
     )
 
   if approvalViolations.nonEmpty then sys.error(approvalViolations.mkString(System.lineSeparator()))
@@ -218,6 +237,13 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "/com/auth0/",
       "/org/apache/pekko/pekko-cluster-sharding",
       "/org/apache/pekko/pekko-projection"
+    ),
+    "adapter-cassandra" -> Seq(
+      "/sttp/tapir/",
+      "/io/jsonwebtoken/",
+      "/com/auth0/",
+      "/org/apache/pekko/pekko-cluster-sharding",
+      "/org/apache/pekko/pekko-projection"
     )
   )
 
@@ -234,6 +260,10 @@ ThisBuild / verifyArchitecture := Def.uncached {
       "runtime-pekko",
       (runtimePekko / Compile / externalDependencyClasspath).value,
       forbiddenCompileDependencyMarkers("runtime-pekko")
+    ) ++ forbiddenDependencyViolations(
+      "adapter-cassandra",
+      (adapterCassandra / Compile / externalDependencyClasspath).value,
+      forbiddenCompileDependencyMarkers("adapter-cassandra")
     )
 
   if dependencyViolations.nonEmpty then

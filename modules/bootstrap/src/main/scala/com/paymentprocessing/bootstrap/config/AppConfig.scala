@@ -2,7 +2,6 @@ package com.paymentprocessing.bootstrap.config
 
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigException
-import com.typesafe.config.ConfigFactory
 
 final case class AppConfig(
     application: ApplicationConfig,
@@ -17,7 +16,11 @@ final case class ApplicationConfig(name: String, environment: RuntimeEnvironment
 
 final case class HttpConfig(interface: String, port: Int)
 
-final case class CassandraConfig(host: String, port: Int, localDatacenter: String)
+final case class CassandraConfig(
+    host: String,
+    port: Int,
+    localDatacenter: String
+)
 
 final case class SecurityConfig(tokenIssuer: String)
 
@@ -33,7 +36,7 @@ enum ProviderMode:
 
 object AppConfig:
   def load(): Either[ConfigError, AppConfig] =
-    load(ConfigFactory.load())
+    ProductionRuntimeConfig.load().flatMap(load)
 
   def load(config: Config): Either[ConfigError, AppConfig] =
     try

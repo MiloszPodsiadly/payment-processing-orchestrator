@@ -21,6 +21,19 @@ services:
       retries: 20
       start_period: 60s
 
+  cassandra-migrate:
+    image: cassandra:5.0.8
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./modules/adapter-cassandra/src/main/resources/db/cassandra/migrations:/migrations:ro
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        cqlsh cassandra 9042 -f /migrations/V001__pekko_persistence_journal.cql
+
 volumes:
   cassandra-data:
 

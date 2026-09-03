@@ -87,6 +87,26 @@ object ArchitecturePolicy {
     }
   }
 
+  def verifyAdapterCassandraDirectFixtures(approved: Set[DependencyCoordinate]): Unit = {
+    val unexpectedDependency = DependencyCoordinate("com.example", "random-http-client")
+    val fixtureViolations =
+      unapprovedDirectDependencyViolations(
+        "adapter-cassandra",
+        approved + unexpectedDependency,
+        approved
+      )
+
+    if (
+      fixtureViolations != Seq(
+        "adapter-cassandra direct production dependency requires architecture approval: com.example:random-http-client"
+      )
+    ) {
+      sys.error(
+        "Adapter Cassandra architecture dependency allowlist fixture did not fail for an unapproved direct production dependency"
+      )
+    }
+  }
+
   private def isTestConfiguration(configurations: String): Boolean =
     configurations
       .split(";")

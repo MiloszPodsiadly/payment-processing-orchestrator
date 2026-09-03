@@ -10,6 +10,7 @@ This directory is reserved for lightweight project notes that are separate from 
 - `payment-state-machine.md` - Phase 2 implemented payment states, legal commands, illegal commands, operation identity, unknown states, replay validation, and corrupt-history behavior.
 - `configuration.md` - Configuration ownership, fail-closed runtime environment rules, and typed startup loading rules.
 - `runtime-pekko-payment-entity.md` - Phase 3 PaymentEntity runtime boundary, reply semantics, persistence identity, recovery semantics, and explicit Phase 4 exclusions.
+- `cassandra-persistence.md` - Phase 4 Cassandra journal ownership, schema migration, startup validation, runtime settings, and Testcontainers coverage.
 - `testing-workflow.md` - Test categories, sbt 2 command syntax, architecture checks, current test coverage, and deferred test work.
 - `local-development.md` - Prerequisites, build commands, truthful `.env` wrapper semantics, and local Cassandra workflow.
 - `adr/index.md` - Initial ADR index expanded from the Phase 0 accepted direction.

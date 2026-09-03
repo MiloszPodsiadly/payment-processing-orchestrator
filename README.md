@@ -7,10 +7,11 @@ duplicate delivery, provider timeouts, crashes, authorization boundaries, and te
 
 ## Current Phase
 
-PHASE 3 - Pekko Payment Entity
+PHASE 4 - Cassandra Persistence
 
 This repository currently contains the Phase 1 technical foundation, the pure Phase 2
-payment domain, and the Phase 3 Apache Pekko Typed event-sourced payment entity.
+payment domain, the Phase 3 Apache Pekko Typed event-sourced payment entity, and the
+Phase 4 Cassandra journal persistence integration.
 
 ## Core Direction
 
@@ -34,6 +35,7 @@ payment domain, and the Phase 3 Apache Pekko Typed event-sourced payment entity.
 - Typesafe Config for typed startup configuration loading
 - Docker Compose with local Cassandra 5.0.8
 - Apache Pekko Typed and Pekko Persistence Typed in `runtime-pekko`
+- Apache Pekko Persistence Cassandra in `adapter-cassandra`
 
 ## Implemented In This Phase
 
@@ -52,8 +54,11 @@ payment domain, and the Phase 3 Apache Pekko Typed event-sourced payment entity.
 - Runtime envelope and recovery checks bind one entity/journal to one `PaymentId`; cross-payment creation contamination fails loudly.
 - Phase 3 tests prove current-version `PaymentEvent` serialization round trips, inherit the runtime-owned serializer binding from `runtime-pekko` `reference.conf`, and run Persistence TestKit with event serialization enabled.
 - Recovery tests cover Created, Pending, Authorized/Captured/Refunded, Unknown, partial refund, corrupt history, journal write failure, and mailbox serialization scenarios.
-- Local Cassandra infrastructure is defined in `compose.yaml`.
-- CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and integration-test compilation.
+- `adapter-cassandra` owns the Cassandra journal schema migration and startup validation.
+- Bootstrap selects `pekko.persistence.cassandra.journal`, disables keyspace/table autocreate, disables deletes, and requires QUORUM requests.
+- Cassandra Testcontainers integration tests cover schema migration, startup validation, full `PaymentRuntime` restart recovery, pending/unknown recovery, aggregate isolation, outage-after-recovery write failure, structural schema attacks, journal row serializer metadata, static v1 serializer read compatibility, static v1 writer byte compatibility, and missing-schema fail-closed behavior.
+- Local Cassandra infrastructure and migration execution are defined in `compose.yaml`.
+- CI workflow is configured to run compile, formatting, lint, fast tests, architecture checks, and Cassandra integration tests.
 - Direct GitHub Actions are pinned to immutable commit SHAs.
 
 ## Verified Locally
@@ -67,7 +72,6 @@ payment domain, and the Phase 3 Apache Pekko Typed event-sourced payment entity.
 
 ## What Does Not Exist Yet
 
-- Cassandra journal integration
 - Tapir payment API
 - JWT and RBAC implementation
 - Fraud or provider integrations
@@ -95,19 +99,18 @@ sbt testFull
 sbt "scalafmtSbtCheck; scalafmtCheckAll"
 sbt "scalafixAll --check"
 sbt verifyArchitecture
-sbt integrationTests/Test/compile
+sbt integrationTests/Test/testFull
 ```
 
 `sbt test` is the local fast feedback command and may use normal sbt
 incremental/cache-aware behavior. `sbt testFull` runs the complete fast test suite and is
-the mandatory CI fast-test command. Integration tests remain separate; Phase 1 CI compiles
-them with `sbt integrationTests/Test/compile` and does not execute future infrastructure
-integration suites in the default fast-test path.
+the mandatory CI fast-test command. Integration tests remain separate and Phase 4 CI runs
+them with `sbt integrationTests/Test/testFull`.
 
 Full local CI-equivalent check:
 
 ```powershell
-sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; testFull; verifyArchitecture; integrationTests/Test/compile"
+sbt "clean; compile; scalafmtSbtCheck; scalafmtCheckAll; scalafixAll --check; testFull; verifyArchitecture; integrationTests/Test/testFull"
 ```
 
 The JVM does not automatically read `.env`. Either export `PAYMENT_*` variables in the
@@ -131,8 +134,10 @@ Local Cassandra:
 
 ```powershell
 docker compose up -d cassandra
+docker compose up -d cassandra-migrate
 docker compose ps
 docker compose logs cassandra
+docker compose logs cassandra-migrate
 docker compose stop cassandra
 docker compose down -v
 ```
@@ -148,7 +153,7 @@ the sbt/BSP model as described in [Local Development](documents/local-developmen
 - `modules/application`: use-case coordination and ports.
 - `modules/runtime-pekko`: typed `PaymentEntity`, event-sourced behavior, runtime-owned current-version event serialization, and Phase 3 recovery tests.
 - `modules/adapter-http-tapir`: HTTP API adapter when introduced.
-- `modules/adapter-cassandra`: Cassandra adapter when introduced.
+- `modules/adapter-cassandra`: Cassandra journal schema, Pekko Persistence Cassandra dependency, and startup validation.
 - `modules/adapter-provider`: payment provider adapter when introduced.
 - `modules/adapter-fraud`: fraud gateway adapter when introduced.
 - `modules/security`: authentication, permissions, RBAC, and tenant isolation when introduced.
@@ -163,6 +168,8 @@ the sbt/BSP model as described in [Local Development](documents/local-developmen
 - [Domain Model](documents/domain-model.md)
 - [Payment State Machine](documents/payment-state-machine.md)
 - [Configuration](documents/configuration.md)
+- [Runtime Pekko Payment Entity](documents/runtime-pekko-payment-entity.md)
+- [Cassandra Persistence Journal](documents/cassandra-persistence.md)
 - [Testing Workflow](documents/testing-workflow.md)
 - [Local Development](documents/local-development.md)
 - [ADR Index](documents/adr/index.md)
